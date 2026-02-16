@@ -9,34 +9,24 @@ from datetime import datetime
 st.set_page_config(page_title="Mi Contabilidad Nube", layout="wide", page_icon="☁️")
 
 # --- CONEXIÓN CON GOOGLE SHEETS ---
-# Esta función conecta tu App con la Hoja de Cálculo de forma segura
 def conectar_google_sheets():
-    # Definimos los permisos que necesitamos
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    
-    # Aquí está el truco: En lugar de buscar un archivo, buscamos en los "Secretos" de la nube
-    # (Configuraremos esto en el último paso, no te preocupes si ahora no lo entiendes)
     creds_dict = dict(st.secrets["gcp_service_account"])
     creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
     client = gspread.authorize(creds)
-    
-    # Abrimos la hoja por su nombre
     sheet = client.open("Contabilidad_App").sheet1
     return sheet
 
-# Intentamos conectar. Si falla, mostramos un aviso amigable.
 try:
     sheet = conectar_google_sheets()
 except Exception as e:
-    st.error("⚠️ Error de conexión: No se detectaron las credenciales (Secrets). Esto es normal si estás probando en local sin configurar secrets.toml.")
+    st.error("⚠️ Error de conexión. Revisa tus Secrets.")
     st.stop()
 
-# --- FUNCIONES DE CARGA Y GUARDADO ---
+# --- FUNCIONES ---
 def load_data():
-    # Descargamos todos los datos de la hoja a la App
     data = sheet.get_all_records()
     df = pd.DataFrame(data)
-    # Aseguramos que las columnas existan aunque la hoja esté vacía
     expected_cols = ["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"]
     for col in expected_cols:
         if col not in df.columns:
@@ -44,88 +34,94 @@ def load_data():
     return df
 
 def save_entry(fecha, tipo, categoria, descripcion, monto, es_fijo):
-    # Preparamos la fila para enviarla a Google
     fecha_str = fecha.strftime("%Y-%m-%d")
-    # Convertimos 'True'/'False' a texto para que se lea bien en la hoja
     es_fijo_str = "SÍ" if es_fijo else "NO"
-    
     row = [fecha_str, tipo, categoria, descripcion, monto, es_fijo_str]
     sheet.append_row(row)
 
-# Cargar datos al inicio
-df = load_data()
-
-# --- BARRA LATERAL: INGRESO DE DATOS ---
+# --- BARRA LATERAL: INGRESO MANUAL ---
 st.sidebar.header("📝 Nuevo Movimiento")
 
 with st.sidebar.form("entry_form", clear_on_submit=True):
     fecha = st.date_input("Fecha", datetime.today())
     tipo = st.selectbox("Tipo", ["Gasto", "Ingreso"])
-    categoria = st.text_input("Categoría (ej: Supermercado, Gasolina)")
+    categoria = st.text_input("Categoría (ej: Supermercado)")
     descripcion = st.text_input("Descripción")
     monto = st.number_input("Monto (€)", min_value=0.0, format="%.2f")
-    es_fijo = st.checkbox("¿Es un gasto/ingreso FIJO mensual?")
+    es_fijo = st.checkbox("¿Es FIJO mensual?")
     
-    submitted = st.form_submit_button("Guardar en la Nube")
+    submitted = st.form_submit_button("Guardar Manual")
 
     if submitted:
         if monto > 0:
             monto_final = -monto if tipo == "Gasto" else monto
-            try:
-                save_entry(fecha, tipo, categoria, descripcion, monto_final, es_fijo)
-                st.success("✅ ¡Guardado en Google Sheets!")
-                # Recargar la página para ver el nuevo dato
+            save_entry(fecha, tipo, categoria, descripcion, monto_final, es_fijo)
+            st.success("✅ Guardado")
+            st.rerun()
+
+# --- BARRA LATERAL: IMPORTAR CSV ---
+st.sidebar.markdown("---")
+st.sidebar.header("📥 Importar CSV")
+uploaded_file = st.sidebar.file_uploader("Sube tu archivo aquí", type=["csv"])
+
+if uploaded_file is not None:
+    if st.sidebar.button("Procesar e Importar"):
+        try:
+            # Leemos el CSV
+            df_upload = pd.read_csv(uploaded_file)
+            
+            # Verificamos que tenga las columnas correctas
+            columnas_necesarias = ["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"]
+            
+            # Si faltan columnas, avisamos
+            if not all(col in df_upload.columns for col in columnas_necesarias):
+                st.sidebar.error(f"El CSV debe tener estas columnas exactas: {columnas_necesarias}")
+            else:
+                # Convertimos todo a texto/números compatibles para Google Sheets
+                # Aseguramos formato de fecha YYYY-MM-DD
+                df_upload["Fecha"] = pd.to_datetime(df_upload["Fecha"]).dt.strftime("%Y-%m-%d")
+                
+                # Preparamos los datos como una lista de listas
+                datos_para_subir = df_upload[columnas_necesarias].values.tolist()
+                
+                # Subimos todo de golpe (más rápido)
+                sheet.append_rows(datos_para_subir)
+                
+                st.sidebar.success(f"✅ ¡{len(datos_para_subir)} movimientos importados!")
                 st.rerun()
-            except Exception as e:
-                st.error(f"Error al guardar: {e}")
-        else:
-            st.error("El monto debe ser mayor a 0")
+                
+        except Exception as e:
+            st.sidebar.error(f"Error al leer el CSV: {e}")
 
 # --- CUERPO PRINCIPAL ---
+df = load_data()
+
 st.title("☁️ Contabilidad en la Nube")
 
-# Pestañas
-tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📅 Planificación Fija", "📂 Datos en Bruto"])
+tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📅 Planificación Fija", "📂 Datos"])
 
 with tab1:
     if not df.empty and "Monto" in df.columns:
-        # Asegurar que Monto sea numérico (a veces Google Sheets lo manda como texto)
         df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').fillna(0)
-        
         total_balance = df["Monto"].sum()
-        total_ingresos = df[df["Monto"] > 0]["Monto"].sum()
-        total_gastos = df[df["Monto"] < 0]["Monto"].sum()
-
         col1, col2, col3 = st.columns(3)
-        col1.metric("Balance Total", f"{total_balance:.2f} €")
-        col2.metric("Ingresos", f"{total_ingresos:.2f} €")
-        col3.metric("Gastos", f"{total_gastos:.2f} €")
-
-        st.divider()
-
-        # Gráfico simple
-        if not df.empty:
-            df["Fecha"] = pd.to_datetime(df["Fecha"], errors='coerce')
-            df_sorted = df.sort_values("Fecha")
-            # Gráfico de líneas solo si hay fechas válidas
-            if not df_sorted["Fecha"].isnull().all():
-                fig = px.line(df_sorted, x="Fecha", y="Monto", color="Tipo", title="Evolución de Movimientos")
-                st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("La hoja está vacía. Añade movimientos desde la barra lateral.")
+        col1.metric("Balance", f"{total_balance:.2f} €")
+        col2.metric("Ingresos", f"{df[df['Monto'] > 0]['Monto'].sum():.2f} €")
+        col3.metric("Gastos", f"{df[df['Monto'] < 0]['Monto'].sum():.2f} €")
+        
+        df["Fecha"] = pd.to_datetime(df["Fecha"], errors='coerce')
+        if not df["Fecha"].isnull().all():
+            st.plotly_chart(px.line(df.sort_values("Fecha"), x="Fecha", y="Monto", color="Tipo"), use_container_width=True)
 
 with tab2:
-    st.header("Gastos Fijos Recurrentes")
     if not df.empty and "Es_Fijo" in df.columns:
-        # Filtramos por texto "SÍ" que es como lo guardamos ahora
         fijos = df[(df["Es_Fijo"] == "SÍ") & (df["Monto"] < 0)]
-        if not fijos.empty:
-            total_fijo = fijos["Monto"].sum()
-            st.metric("Gasto Fijo Total (Acumulado)", f"{total_fijo:.2f} €")
-            st.dataframe(fijos, use_container_width=True)
-        else:
-            st.info("No hay gastos fijos registrados.")
+        st.metric("Gasto Fijo Total", f"{fijos['Monto'].sum():.2f} €")
+        st.dataframe(fijos, use_container_width=True)
 
 with tab3:
-    st.markdown(f"Estos datos vienen directamente de tu hoja: **Contabilidad_App**")
     st.dataframe(df, use_container_width=True)
+    # Botón para descargar plantilla CSV para importar
+    plantilla = pd.DataFrame(columns=["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"])
+    csv_plantilla = plantilla.to_csv(index=False).encode('utf-8')
+    st.download_button("⬇️ Descargar Plantilla CSV vacía", csv_plantilla, "plantilla_importacion.csv", "text/csv")
