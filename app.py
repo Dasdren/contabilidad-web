@@ -67,31 +67,56 @@ uploaded_file = st.sidebar.file_uploader("Sube tu archivo aquí", type=["csv"])
 if uploaded_file is not None:
     if st.sidebar.button("Procesar e Importar"):
         try:
-            # Leemos el CSV
+            # --- INTENTO 1: Leer con separador estándar (coma) ---
+            uploaded_file.seek(0)
             df_upload = pd.read_csv(uploaded_file)
             
-            # Verificamos que tenga las columnas correctas
+            # Si vemos que solo hay 1 columna, es sospechoso. Probamos con punto y coma.
+            if len(df_upload.columns) <= 1:
+                uploaded_file.seek(0)
+                df_upload = pd.read_csv(uploaded_file, sep=';', encoding='latin-1')
+            
+            # --- LIMPIEZA DE NOMBRES DE COLUMNAS ---
+            # Quitamos espacios en blanco al principio/final de los nombres
+            df_upload.columns = df_upload.columns.str.strip()
+            
             columnas_necesarias = ["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"]
             
-            # Si faltan columnas, avisamos
+            # Verificamos columnas
             if not all(col in df_upload.columns for col in columnas_necesarias):
-                st.sidebar.error(f"El CSV debe tener estas columnas exactas: {columnas_necesarias}")
+                st.sidebar.error(f"Error de formato. Columnas detectadas: {list(df_upload.columns)}. Se esperaban: {columnas_necesarias}")
             else:
-                # Convertimos todo a texto/números compatibles para Google Sheets
-                # Aseguramos formato de fecha YYYY-MM-DD
-                df_upload["Fecha"] = pd.to_datetime(df_upload["Fecha"]).dt.strftime("%Y-%m-%d")
+                # --- LIMPIEZA INTELIGENTE DE DATOS ---
                 
-                # Preparamos los datos como una lista de listas
+                # 1. Limpiar la columna MONTO (Quitar '€', '?', y cambiar coma por punto)
+                # Convertimos a texto primero para poder reemplazar cosas
+                df_upload["Monto"] = df_upload["Monto"].astype(str)
+                # Quitamos símbolos de moneda y caracteres raros
+                df_upload["Monto"] = df_upload["Monto"].str.replace('€', '', regex=False)
+                df_upload["Monto"] = df_upload["Monto"].str.replace('?', '', regex=False)
+                # Cambiamos la coma decimal española por punto (para que Python entienda el número)
+                df_upload["Monto"] = df_upload["Monto"].str.replace(',', '.', regex=False)
+                # Convertimos a número real
+                df_upload["Monto"] = pd.to_numeric(df_upload["Monto"], errors='coerce') # Si algo falla pone 0
+
+                # 2. Formatear la FECHA
+                df_upload["Fecha"] = pd.to_datetime(df_upload["Fecha"], dayfirst=True, errors='coerce').dt.strftime("%Y-%m-%d")
+                
+                # Eliminamos filas que hayan quedado vacías o con error en la fecha
+                df_upload = df_upload.dropna(subset=['Fecha', 'Monto'])
+
+                # Preparamos los datos
                 datos_para_subir = df_upload[columnas_necesarias].values.tolist()
                 
-                # Subimos todo de golpe (más rápido)
-                sheet.append_rows(datos_para_subir)
-                
-                st.sidebar.success(f"✅ ¡{len(datos_para_subir)} movimientos importados!")
-                st.rerun()
+                if len(datos_para_subir) > 0:
+                    sheet.append_rows(datos_para_subir)
+                    st.sidebar.success(f"✅ ¡{len(datos_para_subir)} movimientos importados correctamente!")
+                    st.rerun()
+                else:
+                    st.sidebar.warning("El archivo parece vacío o los datos no son válidos.")
                 
         except Exception as e:
-            st.sidebar.error(f"Error al leer el CSV: {e}")
+            st.sidebar.error(f"Ocurrió un error al procesar: {e}")
 
 # --- CUERPO PRINCIPAL ---
 df = load_data()
@@ -125,3 +150,4 @@ with tab3:
     plantilla = pd.DataFrame(columns=["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"])
     csv_plantilla = plantilla.to_csv(index=False).encode('utf-8')
     st.download_button("⬇️ Descargar Plantilla CSV vacía", csv_plantilla, "plantilla_importacion.csv", "text/csv")
+
