@@ -28,29 +28,26 @@ def conectar_google_sheets():
 
 sheet = conectar_google_sheets()
 
-# --- CONEXIÓN GEMINI AI (MODELO ACTUALIZADO) ---
+# --- CONEXIÓN GEMINI AI (VERSIÓN AUTO-DETECT) ---
 def consultar_gemini(resumen_texto):
     try:
         api_key = st.secrets["gemini_api_key"]
         genai.configure(api_key=api_key)
-        # Usamos el modelo 1.5-flash que es el estándar actual estable
-        model = genai.GenerativeModel('gemini-1.5-flash')
         
-        prompt = f"""
-        Actúa como un asesor financiero experto e imparcial. Analiza este resumen de mis finanzas personales:
-        {resumen_texto}
-        
-        Dame 3 consejos concretos:
-        1. Sobre cómo reducir mis gastos (basado en las categorías donde más gasto).
-        2. Una recomendación de ahorro.
-        3. Una idea general de inversión conservadora para el excedente.
-        
-        Sé breve, directo y usa formato Markdown con negritas. Háblame de tú.
-        """
-        response = model.generate_content(prompt)
+        # Intentamos con el modelo flash más reciente
+        # Si da error 404, el bloque 'except' intentará con el modelo pro
+        try:
+            model = genai.GenerativeModel('models/gemini-1.5-flash')
+            prompt = f"Analiza mis finanzas: {resumen_texto}. Dame 3 consejos de ahorro e inversión. Habla de tú."
+            response = model.generate_content(prompt)
+        except:
+            # Si el anterior falla, probamos con la nomenclatura alternativa
+            model = genai.GenerativeModel('gemini-1.5-flash-latest')
+            response = model.generate_content(prompt)
+            
         return response.text
     except Exception as e:
-        return f"No pude conectar con Gemini. Verifica tu API Key. Error: {e}"
+        return f"Error de conexión con la IA. Por favor, verifica que tu API Key en 'Secrets' sea correcta. Detalles: {e}"
 
 # --- FUNCIONES DE LIMPIEZA MAESTRAS ---
 def limpiar_dinero_euro(valor):
@@ -227,3 +224,4 @@ with tab4:
             fijos_unicos = fijos.drop_duplicates(subset=['Descripcion', 'Monto_Num'], keep='last')
             st.metric("Gasto Fijo Mensual", f"{fijos_unicos['Monto_Num'].sum():,.2f} €")
             st.dataframe(fijos_unicos[["Categoria", "Descripcion", "Monto"]], use_container_width=True)
+
