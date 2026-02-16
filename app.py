@@ -67,42 +67,43 @@ uploaded_file = st.sidebar.file_uploader("Sube tu archivo aquí", type=["csv"])
 if uploaded_file is not None:
     if st.sidebar.button("Procesar e Importar"):
         try:
-            # --- INTENTO 1: Leer con separador estándar (coma) ---
+            # INTENTO 1: Leer con 'utf-8-sig' (El 'sig' elimina la marca rara ï»¿ de Excel)
             uploaded_file.seek(0)
-            df_upload = pd.read_csv(uploaded_file)
+            df_upload = pd.read_csv(uploaded_file, encoding='utf-8-sig')
             
-            # Si vemos que solo hay 1 columna, es sospechoso. Probamos con punto y coma.
+            # Si vemos que solo hay 1 columna, es que el separador falló. Probamos con punto y coma.
             if len(df_upload.columns) <= 1:
                 uploaded_file.seek(0)
                 df_upload = pd.read_csv(uploaded_file, sep=';', encoding='latin-1')
             
             # --- LIMPIEZA DE NOMBRES DE COLUMNAS ---
-            # Quitamos espacios en blanco al principio/final de los nombres
-            df_upload.columns = df_upload.columns.str.strip()
+            # Quitamos espacios y posibles caracteres BOM residuales
+            df_upload.columns = df_upload.columns.str.strip().str.replace('ï»¿', '')
             
             columnas_necesarias = ["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"]
             
             # Verificamos columnas
             if not all(col in df_upload.columns for col in columnas_necesarias):
-                st.sidebar.error(f"Error de formato. Columnas detectadas: {list(df_upload.columns)}. Se esperaban: {columnas_necesarias}")
+                st.sidebar.error(f"Error de formato.\n\nColumnas detectadas: {list(df_upload.columns)}\n\nSe esperaban: {columnas_necesarias}")
             else:
                 # --- LIMPIEZA INTELIGENTE DE DATOS ---
                 
                 # 1. Limpiar la columna MONTO (Quitar '€', '?', y cambiar coma por punto)
-                # Convertimos a texto primero para poder reemplazar cosas
                 df_upload["Monto"] = df_upload["Monto"].astype(str)
-                # Quitamos símbolos de moneda y caracteres raros
-                df_upload["Monto"] = df_upload["Monto"].str.replace('€', '', regex=False)
-                df_upload["Monto"] = df_upload["Monto"].str.replace('?', '', regex=False)
-                # Cambiamos la coma decimal española por punto (para que Python entienda el número)
+                # Usamos una expresión regular para dejar SOLO números, puntos, comas y el signo menos
+                # Esto elimina el '?' o cualquier símbolo de moneda raro automáticamente
+                df_upload["Monto"] = df_upload["Monto"].str.replace(r'[^\d.,-]', '', regex=True)
+                
+                # Cambiamos la coma decimal española por punto
                 df_upload["Monto"] = df_upload["Monto"].str.replace(',', '.', regex=False)
+                
                 # Convertimos a número real
-                df_upload["Monto"] = pd.to_numeric(df_upload["Monto"], errors='coerce') # Si algo falla pone 0
+                df_upload["Monto"] = pd.to_numeric(df_upload["Monto"], errors='coerce')
 
-                # 2. Formatear la FECHA
+                # 2. Formatear la FECHA (intenta leer formato español día/mes/año)
                 df_upload["Fecha"] = pd.to_datetime(df_upload["Fecha"], dayfirst=True, errors='coerce').dt.strftime("%Y-%m-%d")
                 
-                # Eliminamos filas que hayan quedado vacías o con error en la fecha
+                # Eliminamos filas vacías o con errores
                 df_upload = df_upload.dropna(subset=['Fecha', 'Monto'])
 
                 # Preparamos los datos
@@ -150,4 +151,5 @@ with tab3:
     plantilla = pd.DataFrame(columns=["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"])
     csv_plantilla = plantilla.to_csv(index=False).encode('utf-8')
     st.download_button("⬇️ Descargar Plantilla CSV vacía", csv_plantilla, "plantilla_importacion.csv", "text/csv")
+
 
