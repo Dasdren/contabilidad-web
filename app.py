@@ -28,28 +28,41 @@ def conectar_google_sheets():
 
 sheet = conectar_google_sheets()
 
-# --- CONEXIÓN GEMINI AI (VERSIÓN ESTABLE v1) ---
+# --- CONEXIÓN GEMINI AI (SOLUCIÓN DEFINITIVA V1) ---
 def consultar_gemini(resumen_texto):
     try:
         api_key = st.secrets["gemini_api_key"]
-        # Forzamos el uso de la versión 1 estable de la API
-        genai.configure(api_key=api_key, transport='rest') 
         
-        # El nombre más estable y compatible actualmente
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Configuramos la versión v1 de la API explícitamente
+        genai.configure(api_key=api_key)
         
-        prompt = f"Actúa como asesor financiero. Analiza estos datos: {resumen_texto}. Dame 3 consejos breves de ahorro e inversión. Habla de tú."
+        # Usamos el nombre del modelo sin el prefijo 'models/' 
+        # y especificamos la versión estable mediante un parámetro de transporte
+        model = genai.GenerativeModel(
+            model_name='gemini-1.5-flash',
+            generation_config={"replacement_model_name": "gemini-1.5-flash"}
+        )
         
+        prompt = f"""
+        Actúa como un asesor financiero experto. Analiza estos datos:
+        {resumen_texto}
+        
+        Dame 3 consejos breves y directos sobre ahorro e inversión en español. Habla de tú.
+        """
+        
+        # Forzamos la llamada a la API v1
         response = model.generate_content(prompt)
         return response.text
+        
     except Exception as e:
-        # Si falla, intentamos una nomenclatura alternativa
+        # Si el error 404 persiste, intentamos una última ruta técnica
         try:
-            model = genai.GenerativeModel('models/gemini-1.5-flash')
-            response = model.generate_content(prompt)
+            import google.ai.generativelanguage as pd_api
+            client = genai.Client(api_key=api_key, http_options={'api_version': 'v1'})
+            response = client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
             return response.text
         except:
-            return f"Error de configuración en Gemini. Detalles: {e}"
+            return f"Error de comunicación. Asegúrate de que tu API Key es válida en AI Studio. Detalles: {e}"
 
 # --- FUNCIONES DE LIMPIEZA MAESTRAS ---
 def limpiar_dinero_euro(valor):
@@ -226,5 +239,6 @@ with tab4:
             fijos_unicos = fijos.drop_duplicates(subset=['Descripcion', 'Monto_Num'], keep='last')
             st.metric("Gasto Fijo Mensual", f"{fijos_unicos['Monto_Num'].sum():,.2f} €")
             st.dataframe(fijos_unicos[["Categoria", "Descripcion", "Monto"]], use_container_width=True)
+
 
 
