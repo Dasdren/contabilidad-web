@@ -10,8 +10,8 @@ import re
 import google.generativeai as genai
 from sklearn.linear_model import LinearRegression
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Finanzas con IA", layout="wide", page_icon="🧠")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Finanzas Personales con IA", layout="wide", page_icon="🧠")
 
 # --- CONEXIÓN GOOGLE SHEETS ---
 def conectar_google_sheets():
@@ -28,12 +28,13 @@ def conectar_google_sheets():
 
 sheet = conectar_google_sheets()
 
-# --- CONEXIÓN GEMINI AI ---
+# --- CONEXIÓN GEMINI AI (MODELO ACTUALIZADO) ---
 def consultar_gemini(resumen_texto):
     try:
         api_key = st.secrets["gemini_api_key"]
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel('gemini-pro')
+        # Usamos el modelo 1.5-flash que es el estándar actual estable
+        model = genai.GenerativeModel('gemini-1.5-flash')
         
         prompt = f"""
         Actúa como un asesor financiero experto e imparcial. Analiza este resumen de mis finanzas personales:
@@ -51,23 +52,27 @@ def consultar_gemini(resumen_texto):
     except Exception as e:
         return f"No pude conectar con Gemini. Verifica tu API Key. Error: {e}"
 
-# --- FUNCIONES DE LIMPIEZA ---
+# --- FUNCIONES DE LIMPIEZA MAESTRAS ---
 def limpiar_dinero_euro(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     texto = str(valor).strip()
+    # Dejar solo números, comas, puntos y signo menos
     texto = re.sub(r'[^\d.,-]', '', texto)
+    # Lógica España: 1.200,50 -> 1200.50
     if '.' in texto and ',' in texto:
         texto = texto.replace('.', '').replace(',', '.')
     elif ',' in texto:
         texto = texto.replace(',', '.')
-    try: return float(texto)
-    except: return 0.0
+    try:
+        return float(texto)
+    except:
+        return 0.0
 
 def limpiar_fijo(valor):
     if pd.isna(valor): return "NO"
     return "SÍ" if 'S' in str(valor).upper() else "NO"
 
-# --- LÓGICA DE DATOS ---
+# --- PROCESAMIENTO DE DATOS ---
 def load_data():
     data = sheet.get_all_records()
     df = pd.DataFrame(data)
@@ -87,7 +92,7 @@ def save_entry(fecha, tipo, categoria, descripcion, monto, es_fijo):
     row = [fecha_str, tipo, categoria, descripcion, monto, es_fijo_str]
     sheet.append_row(row)
 
-# --- BARRA LATERAL ---
+# --- BARRA LATERAL (INGRESOS Y CSV) ---
 st.sidebar.header("📝 Nuevo Movimiento")
 with st.sidebar.form("entry_form", clear_on_submit=True):
     fecha = st.date_input("Fecha", datetime.today())
@@ -96,11 +101,11 @@ with st.sidebar.form("entry_form", clear_on_submit=True):
     descripcion = st.text_input("Descripción")
     monto = st.number_input("Monto (€)", min_value=0.0, format="%.2f")
     es_fijo = st.checkbox("¿Es FIJO mensual?")
-    if st.form_submit_button("Guardar"):
+    if st.form_submit_button("Guardar Manual"):
         if monto > 0:
             monto_final = -monto if tipo == "Gasto" else monto
             save_entry(fecha, tipo, categoria, descripcion, monto_final, es_fijo)
-            st.success("✅ Guardado")
+            st.success("✅ ¡Guardado!")
             st.rerun()
 
 st.sidebar.markdown("---")
@@ -117,28 +122,30 @@ if uploaded_file is not None and st.sidebar.button("Procesar e Importar"):
         
         req_cols = ["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"]
         if all(col in df_up.columns for col in req_cols):
+            # Limpieza de datos en la importación
             df_up["Monto"] = df_up["Monto"].apply(limpiar_dinero_euro)
             df_up["Monto"] = pd.to_numeric(df_up["Monto"])
+            # Asegurar signo negativo en gastos
             cond_gasto = df_up["Tipo"].str.lower().str.contains("gasto", na=False)
             df_up["Monto"] = np.where(cond_gasto, -1 * df_up["Monto"].abs(), df_up["Monto"].abs())
+            # Normalizar Fijo y Fechas
             df_up["Es_Fijo"] = df_up["Es_Fijo"].apply(limpiar_fijo)
             df_up["Fecha"] = pd.to_datetime(df_up["Fecha"], dayfirst=True, errors='coerce').dt.strftime("%Y-%m-%d")
-            df_up = df_up.dropna(subset=['Fecha'])
-            df_up = df_up[df_up["Monto"] != 0]
             
+            df_up = df_up.dropna(subset=['Fecha'])
             datos = df_up[req_cols].values.tolist()
             if len(datos) > 0:
                 sheet.append_rows(datos)
                 st.success(f"✅ ¡{len(datos)} movimientos importados!")
                 st.rerun()
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Error en importación: {e}")
 
 # --- CUERPO PRINCIPAL ---
 df = load_data()
-st.title("🧠 Finanzas Personales con IA")
+st.title("🧠 Inteligencia Financiera")
 
-tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard Pro", "🧠 Consultor IA", "🔮 Previsiones", "📅 Planificador"])
+tab1, tab2, tab3, tab4 = st.tabs(["📊 Dashboard Pro", "🤖 Consultor IA", "🔮 Previsiones", "📅 Planificador"])
 
 # --- TAB 1: DASHBOARD ---
 with tab1:
@@ -158,7 +165,7 @@ with tab1:
 
         col_g1, col_g2 = st.columns(2)
         with col_g1:
-            st.subheader("Ingresos vs Gastos")
+            st.subheader("Ingresos vs Gastos Mensuales")
             df["Mes_Año"] = df["Fecha_DT"].dt.strftime('%Y-%m')
             mensual = df.groupby(["Mes_Año", "Tipo"])["Monto_Num"].sum().reset_index()
             mensual["Monto_Abs"] = mensual["Monto_Num"].abs()
@@ -166,76 +173,57 @@ with tab1:
                              color_discrete_map={"Ingreso": "#00CC96", "Gasto": "#EF553B"}), use_container_width=True)
             
         with col_g2:
-            st.subheader("Distribución de Gastos")
+            st.subheader("¿A dónde va el dinero?")
             gastos_df = df[df["Monto_Num"] < 0].copy()
             gastos_df["Monto_Abs"] = gastos_df["Monto_Num"].abs()
             st.plotly_chart(px.sunburst(gastos_df, path=['Categoria', 'Descripcion'], values='Monto_Abs'), use_container_width=True)
 
-# --- TAB 2: GEMINI ---
+# --- TAB 2: CONSULTOR GEMINI ---
 with tab2:
-    st.header("🤖 Gemini: Tu Asesor Financiero")
+    st.header("🤖 Gemini AI: Tu Asesor Personal")
     if st.button("✨ Analizar mis Finanzas con IA"):
-        with st.spinner("Gemini está pensando..."):
+        with st.spinner("Gemini 1.5 está analizando tus datos..."):
             if df.empty:
-                st.warning("Necesito datos.")
+                st.warning("No hay datos suficientes.")
             else:
                 top_gastos = df[df["Monto_Num"] < 0].groupby("Categoria")["Monto_Num"].sum().sort_values().head(3)
-                resumen = f"Balance: {total:.2f}€. Ingresos: {ingresos:.2f}€. Gastos: {gastos:.2f}€. Top Gastos: {top_gastos.to_dict()}."
+                resumen = f"Balance: {total:.2f}€. Ingresos: {ingresos:.2f}€. Gastos: {gastos:.2f}€. Top Categorías: {top_gastos.to_dict()}."
                 st.markdown(consultar_gemini(resumen))
 
-# --- TAB 3: PREVISIONES (CORREGIDO) ---
+# --- TAB 3: PREVISIONES ---
 with tab3:
-    st.header("🔮 El Futuro")
+    st.header("🔮 Predicción a 90 días")
     if not df.empty and len(df) > 5:
         df_sort = df.sort_values("Fecha_DT").dropna(subset=["Fecha_DT"])
         df_sort["Balance_Acumulado"] = df_sort["Monto_Num"].cumsum()
-        
         df_sort['Fecha_Ordinal'] = df_sort['Fecha_DT'].map(datetime.toordinal)
-        X = df_sort[['Fecha_Ordinal']].values
-        y = df_sort['Balance_Acumulado'].values
         
         model = LinearRegression()
-        model.fit(X, y)
+        model.fit(df_sort[['Fecha_Ordinal']].values, df_sort['Balance_Acumulado'].values)
         
-        futuro_dias = 90
-        ultima_fecha = df_sort['Fecha_DT'].max()
-        fechas_futuras = [ultima_fecha + timedelta(days=x) for x in range(1, futuro_dias + 1)]
+        fechas_futuras = [df_sort['Fecha_DT'].max() + timedelta(days=x) for x in range(1, 91)]
         X_futuro = np.array([d.toordinal() for d in fechas_futuras]).reshape(-1, 1)
         y_futuro = model.predict(X_futuro)
         
-        df_futuro = pd.DataFrame({'Fecha': fechas_futuras, 'Predicción': y_futuro})
-        df_futuro['Tipo'] = 'Futuro Estimado'
+        df_final_chart = pd.concat([
+            pd.DataFrame({'Fecha': df_sort['Fecha_DT'], 'Saldo': df_sort['Balance_Acumulado'], 'Tipo': 'Realidad'}),
+            pd.DataFrame({'Fecha': fechas_futuras, 'Saldo': y_futuro, 'Tipo': 'Estimado'})
+        ])
         
-        df_historico = df_sort[['Fecha_DT', 'Balance_Acumulado']].copy()
-        df_historico.columns = ['Fecha', 'Predicción']
-        df_historico['Tipo'] = 'Realidad'
-        
-        df_final_chart = pd.concat([df_historico, df_futuro])
-        
-        fig_pred = px.line(df_final_chart, x="Fecha", y="Predicción", color="Tipo", 
-                           color_discrete_map={"Realidad": "blue", "Futuro Estimado": "orange"})
-        
-        # --- AQUÍ ESTABA EL ERROR CORREGIDO ---
-        # Usamos pd.Timestamp.now() y quitamos el texto dentro de add_vline para evitar error de cálculo
+        fig_pred = px.line(df_final_chart, x="Fecha", y="Saldo", color="Tipo")
         fig_pred.add_vline(x=pd.Timestamp.now(), line_dash="dash")
-        
         st.plotly_chart(fig_pred, use_container_width=True)
-        
-        saldo_futuro = y_futuro[-1]
-        delta = saldo_futuro - total
-        st.metric(f"Saldo en {futuro_dias} días", f"{saldo_futuro:,.2f} €", f"{delta:,.2f} € vs hoy")
+        st.metric("Saldo estimado en 3 meses", f"{y_futuro[-1]:,.2f} €")
     else:
-        st.warning("Necesito al menos 5 movimientos para predecir.")
+        st.warning("Se requiere un historial mayor para predecir.")
 
-# --- TAB 4: FIJOS ---
+# --- TAB 4: PLANIFICADOR (FIJOS ÚNICOS) ---
 with tab4:
-    st.header("📅 Gastos Fijos (Suelo Mensual)")
+    st.header("📅 Costes Fijos Mensuales")
     if not df.empty:
         fijos = df[(df["Es_Fijo_Clean"] == "SÍ") & (df["Monto_Num"] < 0)].copy()
         if not fijos.empty:
+            # Eliminamos duplicados históricos para ver solo el 'suelo' mensual
             fijos_unicos = fijos.drop_duplicates(subset=['Descripcion', 'Monto_Num'], keep='last')
-            coste_mensual = fijos_unicos["Monto_Num"].sum()
-            st.metric("Coste Fijo Mensual", f"{coste_mensual:,.2f} €")
+            st.metric("Gasto Fijo Mensual", f"{fijos_unicos['Monto_Num'].sum():,.2f} €")
             st.dataframe(fijos_unicos[["Categoria", "Descripcion", "Monto"]], use_container_width=True)
-        else:
-            st.info("No hay gastos fijos.")
