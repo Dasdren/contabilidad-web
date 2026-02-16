@@ -28,26 +28,28 @@ def conectar_google_sheets():
 
 sheet = conectar_google_sheets()
 
-# --- CONEXIÓN GEMINI AI (VERSIÓN AUTO-DETECT) ---
+# --- CONEXIÓN GEMINI AI (VERSIÓN ESTABLE v1) ---
 def consultar_gemini(resumen_texto):
     try:
         api_key = st.secrets["gemini_api_key"]
-        genai.configure(api_key=api_key)
+        # Forzamos el uso de la versión 1 estable de la API
+        genai.configure(api_key=api_key, transport='rest') 
         
-        # Intentamos con el modelo flash más reciente
-        # Si da error 404, el bloque 'except' intentará con el modelo pro
-        try:
-            model = genai.GenerativeModel('models/gemini-1.5-flash')
-            prompt = f"Analiza mis finanzas: {resumen_texto}. Dame 3 consejos de ahorro e inversión. Habla de tú."
-            response = model.generate_content(prompt)
-        except:
-            # Si el anterior falla, probamos con la nomenclatura alternativa
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content(prompt)
-            
+        # El nombre más estable y compatible actualmente
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        prompt = f"Actúa como asesor financiero. Analiza estos datos: {resumen_texto}. Dame 3 consejos breves de ahorro e inversión. Habla de tú."
+        
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        return f"Error de conexión con la IA. Por favor, verifica que tu API Key en 'Secrets' sea correcta. Detalles: {e}"
+        # Si falla, intentamos una nomenclatura alternativa
+        try:
+            model = genai.GenerativeModel('models/gemini-1.5-flash')
+            response = model.generate_content(prompt)
+            return response.text
+        except:
+            return f"Error de configuración en Gemini. Detalles: {e}"
 
 # --- FUNCIONES DE LIMPIEZA MAESTRAS ---
 def limpiar_dinero_euro(valor):
@@ -224,4 +226,5 @@ with tab4:
             fijos_unicos = fijos.drop_duplicates(subset=['Descripcion', 'Monto_Num'], keep='last')
             st.metric("Gasto Fijo Mensual", f"{fijos_unicos['Monto_Num'].sum():,.2f} €")
             st.dataframe(fijos_unicos[["Categoria", "Descripcion", "Monto"]], use_container_width=True)
+
 
