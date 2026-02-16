@@ -24,7 +24,45 @@ except Exception as e:
     st.error("⚠️ Error de conexión. Revisa tus Secrets en la configuración de Streamlit.")
     st.stop()
 
-# --- FUNCIONES ---
+# --- FUNCIONES DE LIMPIEZA AVANZADA (LOS ROBOTS) ---
+
+def limpiar_monto(valor):
+    """Convierte formatos españoles (1.000,50) a formato Python (1000.50)"""
+    if pd.isna(valor) or str(valor).strip() == "":
+        return 0.0
+    
+    # Convertimos a texto puro
+    s = str(valor).strip()
+    
+    # Quitamos símbolos de moneda y espacios
+    s = s.replace('€', '').replace('?', '').replace('EUR', '').strip()
+    
+    # CASO CRÍTICO: Detectar si es formato español (punto para miles, coma para decimales)
+    # Ejemplo: 1.200,50 o 50,20
+    if ',' in s:
+        # Si tiene puntos (miles), los quitamos primero
+        s = s.replace('.', '') 
+        # Luego cambiamos la coma por punto (para que Python entienda el decimal)
+        s = s.replace(',', '.')
+    
+    try:
+        return float(s)
+    except:
+        return 0.0
+
+def normalizar_fijo(valor):
+    """Entiende cualquier variante de SI/NO"""
+    if pd.isna(valor):
+        return "NO"
+    
+    texto = str(valor).upper().strip() # Convertir a mayúsculas y quitar espacios
+    
+    # Lista de palabras que significan "SÍ"
+    if texto in ['SI', 'SÍ', 'S', 'YES', 'Y', 'TRUE', '1']:
+        return "SÍ"
+    return "NO"
+
+# --- FUNCIONES PRINCIPALES ---
 def load_data():
     data = sheet.get_all_records()
     df = pd.DataFrame(data)
@@ -68,53 +106,46 @@ uploaded_file = st.sidebar.file_uploader("Sube tu archivo aquí", type=["csv"])
 if uploaded_file is not None:
     if st.sidebar.button("Procesar e Importar"):
         try:
-            # 1. INTENTO DE LECTURA (Lógica simplificada para evitar errores de sintaxis)
+            # 1. CARGA FLEXIBLE (Intenta detectar punto y coma o coma automáticamente)
             uploaded_file.seek(0)
             try:
-                # Intentamos leer con motor python que es más flexible
+                # Engine python detecta separadores automáticamente mejor
                 df_upload = pd.read_csv(uploaded_file, encoding='utf-8-sig', sep=None, engine='python')
             except:
-                # Si falla, probamos la codificación de Excel típica
                 uploaded_file.seek(0)
                 df_upload = pd.read_csv(uploaded_file, encoding='latin-1', sep=';')
             
-            # 2. LIMPIEZA DE NOMBRES DE COLUMNAS
+            # Limpieza cabeceras
             df_upload.columns = df_upload.columns.str.strip().str.replace('ï»¿', '')
             
             columnas_necesarias = ["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"]
             
-            # Verificamos columnas
             if not all(col in df_upload.columns for col in columnas_necesarias):
                 st.sidebar.error(f"Error de formato. Columnas encontradas: {list(df_upload.columns)}")
             else:
-                # 3. LIMPIEZA DE DATOS
+                # 2. APLICAMOS LOS ROBOTS DE LIMPIEZA
                 
-                # A) Limpieza de Dinero (Quitar ?, €, puntos de miles y arreglar coma decimal)
-                df_upload["Monto"] = df_upload["Monto"].astype(str)
-                df_upload["Monto"] = df_upload["Monto"].str.replace('?', '', regex=False)
-                df_upload["Monto"] = df_upload["Monto"].str.replace('€', '', regex=False)
-                df_upload["Monto"] = df_upload["Monto"].str.replace('.', '', regex=False) # Quitar punto de miles
-                df_upload["Monto"] = df_upload["Monto"].str.replace(',', '.', regex=False) # Coma a punto decimal
-                df_upload["Monto"] = pd.to_numeric(df_upload["Monto"], errors='coerce')
+                # A) Limpiar dinero usando la función inteligente
+                df_upload["Monto"] = df_upload["Monto"].apply(limpiar_monto)
 
-                # B) Inteligencia de Signos (Gasto negativo, Ingreso positivo)
+                # B) Inteligencia de Signos (Gastos negativos)
                 df_upload["Monto"] = np.where(
                     df_upload["Tipo"].str.lower().str.contains("gasto", na=False), 
                     -1 * df_upload["Monto"].abs(),
                     df_upload["Monto"].abs()
                 )
 
-                # C) Arreglo de ES_FIJO (Normalizar SI/SÍ)
-                df_upload["Es_Fijo"] = df_upload["Es_Fijo"].astype(str).str.upper().str.strip()
-                df_upload["Es_Fijo"] = df_upload["Es_Fijo"].replace(['SI', 'YES', 'S'], 'SÍ')
+                # C) Normalizar columna FIJO usando la función inteligente
+                df_upload["Es_Fijo"] = df_upload["Es_Fijo"].apply(normalizar_fijo)
 
                 # D) Fecha
                 df_upload["Fecha"] = pd.to_datetime(df_upload["Fecha"], dayfirst=True, errors='coerce').dt.strftime("%Y-%m-%d")
                 
                 # Filtrar errores
                 df_upload = df_upload.dropna(subset=['Fecha', 'Monto'])
+                df_upload = df_upload[df_upload["Monto"] != 0] # Quitamos valores 0
 
-                # 4. SUBIR
+                # 3. SUBIR A LA NUBE
                 datos_para_subir = df_upload[columnas_necesarias].values.tolist()
                 
                 if len(datos_para_subir) > 0:
@@ -136,10 +167,9 @@ tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📅 Planificación Fija", "📂 
 
 with tab1:
     if not df.empty and "Monto" in df.columns:
-        if df["Monto"].dtype == object:
-             df["Monto"] = df["Monto"].astype(str).str.replace(',', '.', regex=False)
-        
-        df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').fillna(0)
+        # Aseguramos que lo que viene de Google Sheets se entienda como número
+        # Google Sheets a veces devuelve "1,000.50" como texto
+        df["Monto"] = df["Monto"].apply(limpiar_monto)
         
         total_balance = df["Monto"].sum()
         col1, col2, col3 = st.columns(3)
@@ -156,9 +186,11 @@ with tab1:
 
 with tab2:
     if not df.empty and "Es_Fijo" in df.columns:
-        # Buscamos "SÍ" o "SI"
+        # Volvemos a aplicar la limpieza por si acaso
+        df["Es_Fijo"] = df["Es_Fijo"].apply(normalizar_fijo)
+        
         fijos = df[
-            (df["Es_Fijo"].astype(str).str.upper().isin(["SÍ", "SI"])) & 
+            (df["Es_Fijo"] == "SÍ") & 
             (df["Monto"] < 0)
         ]
         
@@ -167,7 +199,7 @@ with tab2:
             st.metric("Gasto Fijo Total Acumulado", f"{total_fijo:.2f} €")
             st.dataframe(fijos, use_container_width=True)
         else:
-            st.info("No hay gastos marcados como fijos (Busco 'SÍ' o 'SI' en la columna Es_Fijo).")
+            st.info("No hay gastos marcados como fijos.")
 
 with tab3:
     st.dataframe(df, use_container_width=True)
