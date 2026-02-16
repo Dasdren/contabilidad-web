@@ -5,64 +5,53 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 import numpy as np
+import re
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Mi Contabilidad Nube", layout="wide", page_icon="☁️")
+st.set_page_config(page_title="Mi Contabilidad Nube", layout="wide", page_icon="💰")
 
 # --- CONEXIÓN CON GOOGLE SHEETS ---
 def conectar_google_sheets():
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    sheet = client.open("Contabilidad_App").sheet1
-    return sheet
+    try:
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds_dict = dict(st.secrets["gcp_service_account"])
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        sheet = client.open("Contabilidad_App").sheet1
+        return sheet
+    except Exception as e:
+        st.error(f"⚠️ Error de conexión: {e}")
+        st.stop()
 
-try:
-    sheet = conectar_google_sheets()
-except Exception as e:
-    st.error("⚠️ Error de conexión. Revisa tus Secrets en la configuración de Streamlit.")
-    st.stop()
+sheet = conectar_google_sheets()
 
-# --- FUNCIONES DE LIMPIEZA AVANZADA (LOS ROBOTS) ---
-
-def limpiar_monto(valor):
-    """Convierte formatos españoles (1.000,50) a formato Python (1000.50)"""
+# --- FUNCIONES DE LIMPIEZA ---
+def limpiar_dinero_euro(valor):
+    """Limpia formatos de moneda española a float de Python"""
     if pd.isna(valor) or str(valor).strip() == "":
         return 0.0
+    texto = str(valor).strip()
+    # Dejar solo números, comas, puntos y menos
+    texto = re.sub(r'[^\d.,-]', '', texto)
     
-    # Convertimos a texto puro
-    s = str(valor).strip()
-    
-    # Quitamos símbolos de moneda y espacios
-    s = s.replace('€', '').replace('?', '').replace('EUR', '').strip()
-    
-    # CASO CRÍTICO: Detectar si es formato español (punto para miles, coma para decimales)
-    # Ejemplo: 1.200,50 o 50,20
-    if ',' in s:
-        # Si tiene puntos (miles), los quitamos primero
-        s = s.replace('.', '') 
-        # Luego cambiamos la coma por punto (para que Python entienda el decimal)
-        s = s.replace(',', '.')
+    # Lógica Española: Si hay punto y coma, punto=miles, coma=decimal
+    if '.' in texto and ',' in texto:
+        texto = texto.replace('.', '').replace(',', '.')
+    elif ',' in texto:
+        texto = texto.replace(',', '.')
     
     try:
-        return float(s)
+        return float(texto)
     except:
         return 0.0
 
-def normalizar_fijo(valor):
-    """Entiende cualquier variante de SI/NO"""
-    if pd.isna(valor):
-        return "NO"
-    
-    texto = str(valor).upper().strip() # Convertir a mayúsculas y quitar espacios
-    
-    # Lista de palabras que significan "SÍ"
-    if texto in ['SI', 'SÍ', 'S', 'YES', 'Y', 'TRUE', '1']:
-        return "SÍ"
-    return "NO"
+def limpiar_fijo(valor):
+    """Normaliza SI/NO"""
+    if pd.isna(valor): return "NO"
+    texto = str(valor).upper()
+    return "SÍ" if 'S' in texto else "NO"
 
-# --- FUNCIONES PRINCIPALES ---
+# --- CARGA DE DATOS ---
 def load_data():
     data = sheet.get_all_records()
     df = pd.DataFrame(data)
@@ -78,132 +67,126 @@ def save_entry(fecha, tipo, categoria, descripcion, monto, es_fijo):
     row = [fecha_str, tipo, categoria, descripcion, monto, es_fijo_str]
     sheet.append_row(row)
 
-# --- BARRA LATERAL: INGRESO MANUAL ---
+# --- BARRA LATERAL ---
 st.sidebar.header("📝 Nuevo Movimiento")
-
 with st.sidebar.form("entry_form", clear_on_submit=True):
     fecha = st.date_input("Fecha", datetime.today())
     tipo = st.selectbox("Tipo", ["Gasto", "Ingreso"])
-    categoria = st.text_input("Categoría (ej: Supermercado)")
+    categoria = st.text_input("Categoría")
     descripcion = st.text_input("Descripción")
     monto = st.number_input("Monto (€)", min_value=0.0, format="%.2f")
     es_fijo = st.checkbox("¿Es FIJO mensual?")
     
-    submitted = st.form_submit_button("Guardar Manual")
-
-    if submitted:
+    if st.form_submit_button("Guardar"):
         if monto > 0:
             monto_final = -monto if tipo == "Gasto" else monto
             save_entry(fecha, tipo, categoria, descripcion, monto_final, es_fijo)
             st.success("✅ Guardado")
             st.rerun()
 
-# --- BARRA LATERAL: IMPORTAR CSV ---
+# --- IMPORTADOR CSV ---
 st.sidebar.markdown("---")
 st.sidebar.header("📥 Importar CSV")
-uploaded_file = st.sidebar.file_uploader("Sube tu archivo aquí", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("Sube tu archivo", type=["csv"])
 
 if uploaded_file is not None:
     if st.sidebar.button("Procesar e Importar"):
         try:
-            # 1. CARGA FLEXIBLE (Intenta detectar punto y coma o coma automáticamente)
             uploaded_file.seek(0)
-            try:
-                # Engine python detecta separadores automáticamente mejor
-                df_upload = pd.read_csv(uploaded_file, encoding='utf-8-sig', sep=None, engine='python')
-            except:
-                uploaded_file.seek(0)
-                df_upload = pd.read_csv(uploaded_file, encoding='latin-1', sep=';')
+            primera_linea = uploaded_file.readline().decode('utf-8', errors='ignore')
+            separador = ';' if ';' in primera_linea else ','
+            uploaded_file.seek(0)
             
-            # Limpieza cabeceras
+            df_upload = pd.read_csv(uploaded_file, sep=separador, dtype=str, encoding='utf-8-sig', on_bad_lines='skip')
             df_upload.columns = df_upload.columns.str.strip().str.replace('ï»¿', '')
             
-            columnas_necesarias = ["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"]
+            req_cols = ["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"]
+            if not all(col in df_upload.columns for col in req_cols):
+                st.error(f"Faltan columnas: {list(df_upload.columns)}")
+                st.stop()
+
+            # LIMPIEZA
+            df_upload["Monto"] = df_upload["Monto"].apply(limpiar_dinero_euro)
+            df_upload["Monto"] = pd.to_numeric(df_upload["Monto"])
             
-            if not all(col in df_upload.columns for col in columnas_necesarias):
-                st.sidebar.error(f"Error de formato. Columnas encontradas: {list(df_upload.columns)}")
+            condicion_gasto = df_upload["Tipo"].str.lower().str.contains("gasto", na=False)
+            df_upload["Monto"] = np.where(condicion_gasto, -1 * df_upload["Monto"].abs(), df_upload["Monto"].abs())
+            
+            df_upload["Es_Fijo"] = df_upload["Es_Fijo"].apply(limpiar_fijo)
+            df_upload["Fecha"] = pd.to_datetime(df_upload["Fecha"], dayfirst=True, errors='coerce').dt.strftime("%Y-%m-%d")
+            
+            df_upload = df_upload.dropna(subset=['Fecha'])
+            df_upload = df_upload[df_upload["Monto"] != 0]
+
+            datos = df_upload[req_cols].values.tolist()
+            if len(datos) > 0:
+                sheet.append_rows(datos)
+                st.success(f"✅ ¡{len(datos)} movimientos importados!")
+                st.rerun()
             else:
-                # 2. APLICAMOS LOS ROBOTS DE LIMPIEZA
-                
-                # A) Limpiar dinero usando la función inteligente
-                df_upload["Monto"] = df_upload["Monto"].apply(limpiar_monto)
-
-                # B) Inteligencia de Signos (Gastos negativos)
-                df_upload["Monto"] = np.where(
-                    df_upload["Tipo"].str.lower().str.contains("gasto", na=False), 
-                    -1 * df_upload["Monto"].abs(),
-                    df_upload["Monto"].abs()
-                )
-
-                # C) Normalizar columna FIJO usando la función inteligente
-                df_upload["Es_Fijo"] = df_upload["Es_Fijo"].apply(normalizar_fijo)
-
-                # D) Fecha
-                df_upload["Fecha"] = pd.to_datetime(df_upload["Fecha"], dayfirst=True, errors='coerce').dt.strftime("%Y-%m-%d")
-                
-                # Filtrar errores
-                df_upload = df_upload.dropna(subset=['Fecha', 'Monto'])
-                df_upload = df_upload[df_upload["Monto"] != 0] # Quitamos valores 0
-
-                # 3. SUBIR A LA NUBE
-                datos_para_subir = df_upload[columnas_necesarias].values.tolist()
-                
-                if len(datos_para_subir) > 0:
-                    sheet.append_rows(datos_para_subir)
-                    st.sidebar.success(f"✅ ¡{len(datos_para_subir)} movimientos importados!")
-                    st.rerun()
-                else:
-                    st.sidebar.warning("Archivo vacío o datos inválidos.")
-                
+                st.warning("Archivo vacío.")
         except Exception as e:
-            st.sidebar.error(f"Ocurrió un error técnico: {e}")
+            st.error(f"Error: {e}")
 
-# --- CUERPO PRINCIPAL ---
+# --- DASHBOARD PRINCIPAL ---
 df = load_data()
+st.title("💰 Mi Contabilidad")
 
-st.title("☁️ Contabilidad en la Nube")
+tab1, tab2, tab3 = st.tabs(["📊 Balance Global", "📅 Planificación Mensual (Fijos)", "📂 Datos"])
 
-tab1, tab2, tab3 = st.tabs(["📊 Dashboard", "📅 Planificación Fija", "📂 Datos"])
-
+# PESTAÑA 1: BALANCE (Aquí SÍ sumamos todo)
 with tab1:
     if not df.empty and "Monto" in df.columns:
-        # Aseguramos que lo que viene de Google Sheets se entienda como número
-        # Google Sheets a veces devuelve "1,000.50" como texto
-        df["Monto"] = df["Monto"].apply(limpiar_monto)
+        df["Monto_Num"] = df["Monto"].apply(limpiar_dinero_euro)
         
-        total_balance = df["Monto"].sum()
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Balance Total", f"{total_balance:.2f} €")
-        col2.metric("Ingresos", f"{df[df['Monto'] > 0]['Monto'].sum():.2f} €")
-        col3.metric("Gastos", f"{df[df['Monto'] < 0]['Monto'].sum():.2f} €")
+        # KPI Totales Históricos
+        total = df["Monto_Num"].sum()
+        ingresos = df[df["Monto_Num"] > 0]["Monto_Num"].sum()
+        gastos = df[df["Monto_Num"] < 0]["Monto_Num"].sum()
+        
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Balance Actual (Cuenta)", f"{total:,.2f} €")
+        c2.metric("Total Ingresado (Histórico)", f"{ingresos:,.2f} €")
+        c3.metric("Total Gastado (Histórico)", f"{gastos:,.2f} €")
         
         st.divider()
-        
-        df["Fecha"] = pd.to_datetime(df["Fecha"], errors='coerce')
-        if not df["Fecha"].isnull().all():
-            df_sorted = df.sort_values("Fecha")
-            st.plotly_chart(px.line(df_sorted, x="Fecha", y="Monto", color="Tipo", title="Evolución Temporal"), use_container_width=True)
+        df["Fecha_DT"] = pd.to_datetime(df["Fecha"], errors='coerce')
+        if not df["Fecha_DT"].isnull().all():
+            st.plotly_chart(px.line(df.sort_values("Fecha_DT"), x="Fecha", y="Monto_Num", color="Tipo", title="Evolución de tu dinero"), use_container_width=True)
 
+# PESTAÑA 2: PLANIFICACIÓN (Aquí NO duplicamos)
 with tab2:
-    if not df.empty and "Es_Fijo" in df.columns:
-        # Volvemos a aplicar la limpieza por si acaso
-        df["Es_Fijo"] = df["Es_Fijo"].apply(normalizar_fijo)
+    st.header("🔮 Tu Coste de Vida Mensual")
+    st.info("Esta pantalla te muestra tus gastos fijos ÚNICOS. Si pagas el alquiler todos los meses, aquí solo aparecerá una vez para que sepas cuánto necesitas al mes.")
+
+    if not df.empty:
+        # 1. Preparamos los datos
+        df["Es_Fijo_Clean"] = df["Es_Fijo"].apply(limpiar_fijo)
+        df["Monto_Num"] = df["Monto"].apply(limpiar_dinero_euro)
         
-        fijos = df[
-            (df["Es_Fijo"] == "SÍ") & 
-            (df["Monto"] < 0)
-        ]
+        # 2. Filtramos solo lo que sea Gasto y sea Fijo
+        fijos = df[(df["Es_Fijo_Clean"] == "SÍ") & (df["Monto_Num"] < 0)].copy()
         
         if not fijos.empty:
-            total_fijo = fijos["Monto"].sum()
-            st.metric("Gasto Fijo Total Acumulado", f"{total_fijo:.2f} €")
-            st.dataframe(fijos, use_container_width=True)
+            # 3. ELIMINAR DUPLICADOS (La Magia)
+            # Nos quedamos con los fijos únicos basándonos en Descripción e Importe.
+            # (Keep='last' se queda con el más reciente)
+            fijos_unicos = fijos.drop_duplicates(subset=['Descripcion', 'Monto_Num'], keep='last')
+            
+            # Calculamos lo que te cuesta el mes
+            coste_mensual = fijos_unicos["Monto_Num"].sum()
+            
+            # Mostrar KPIs
+            st.metric("Gasto Fijo Mensual Estimado", f"{coste_mensual:,.2f} €", delta="Dinero que sale sí o sí cada mes")
+            
+            st.subheader("Desglose de tus recibos únicos:")
+            st.dataframe(fijos_unicos[["Categoria", "Descripcion", "Monto"]], use_container_width=True)
+            
+            st.markdown("---")
+            st.caption(f"*Nota: En tu historial total tienes {len(fijos)} pagos fijos registrados, pero aquí te mostramos los {len(fijos_unicos)} únicos que forman tu 'suelo' mensual.*")
+            
         else:
-            st.info("No hay gastos marcados como fijos.")
+            st.warning("No tienes gastos marcados como 'SÍ' en la columna Es_Fijo.")
 
 with tab3:
-    st.dataframe(df, use_container_width=True)
-    
-    plantilla = pd.DataFrame(columns=["Fecha", "Tipo", "Categoria", "Descripcion", "Monto", "Es_Fijo"])
-    csv_plantilla = plantilla.to_csv(index=False).encode('utf-8')
-    st.download_button("⬇️ Descargar Plantilla CSV vacía", csv_plantilla, "plantilla_importacion.csv", "text/csv")
+    st.dataframe(df)
