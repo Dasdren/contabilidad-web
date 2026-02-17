@@ -72,6 +72,7 @@ def load_data():
     records = sheet.get_all_records()
     df = pd.DataFrame(records)
     if not df.empty:
+        # Añadimos un índice real para poder actualizar filas específicas en el futuro
         df["Importe_Num"] = df["Importe"].apply(limpiar_importe)
         df["Fecha_DT"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors='coerce')
         df["Año"] = df["Fecha_DT"].dt.year
@@ -121,10 +122,12 @@ with st.sidebar:
     años = sorted([int(a) for a in df_raw["Año"].dropna().unique() if a >= 2025], reverse=True)
     año_sel = st.selectbox("Año Actual", años if años else [2026])
 
+# Filtramos los datos para la vista actual
 df = df_raw[df_raw["Año"] == año_sel].copy() if not df_raw.empty else pd.DataFrame()
 
 t1, t2, t3, t4 = st.tabs(["📊 Resumen Ejecutivo", "📅 Planificador Fijos", "🤖 Experto IA", "📂 Editor Vivo"])
 
+# --- TAB 1: RESUMEN ---
 with t1:
     if not df.empty:
         ing = df[df["Importe_Num"] > 0]["Importe_Num"].sum()
@@ -146,6 +149,7 @@ with t1:
             df_pie["Val"] = df_pie["Importe_Num"].abs()
             st.plotly_chart(px.pie(df_pie, values="Val", names="Categoria", hole=0.5, template="plotly_dark"), use_container_width=True)
 
+# --- TAB 2: PLANIFICADOR ---
 with t2:
     st.header("📋 Suelo de Gastos Fijos")
     if not df.empty:
@@ -155,52 +159,67 @@ with t2:
         st.markdown(f'<p class="label-led">Necesidad Mensual</p><p class="blue-led">{total_f:,.2f} €</p>', unsafe_allow_html=True)
         st.dataframe(presupuesto[["Descripcion", "Importe", "Categoria"]], use_container_width=True)
 
+# --- TAB 3: IA ---
 with t3:
     st.header("🤖 Consultoría Experto Gem")
     if st.button("✨ Ejecutar Análisis Estratégico"):
         with st.spinner("Analizando..."):
-            resumen = f"Ingresos: {ing}€, Gastos: {gas}€, Balance: {bal}€"
-            analisis = llamar_experto_ia(resumen)
-            st.markdown(f"### 💡 Informe:\n{analisis}")
+            if not df.empty:
+                resumen = f"Ingresos: {ing}€, Gastos: {gas}€, Balance: {bal}€"
+                analisis = llamar_experto_ia(resumen)
+                st.markdown(f"### 💡 Informe:\n{analisis}")
 
-# --- TAB 4: EDITOR VIVO (AHORA CON EDICIÓN DE CANTIDAD) ---
+# --- TAB 4: EDITOR VIVO (CORREGIDO Y TOTALMENTE EDITABLE) ---
 with t4:
     st.header("📂 Editor de Datos")
-    st.write("Puedes modificar la **Categoría**, el **Importe** y si es **Fijo**. Pulsa Guardar al terminar.")
+    st.write("Modifica cualquier celda de **Categoría, Descripción, Importe o Fijo**. El botón de abajo guardará todo el bloque actual.")
+    
     if not df.empty:
-        # Definimos qué columnas son editables y cuáles no
-        df_editor = df[["Fecha", "Categoria", "Descripcion", "Importe", "Es_Fijo"]].copy()
-        
+        # Definimos las categorías para el desplegable
         cats_list = ["Varios", "Vivienda", "Ocio", "Suministros", "Alimentación", "Transporte", "Suscripciones", "Salud"]
         
+        # Seleccionamos las columnas para editar. 
+        # IMPORTANTE: No deshabilitamos nada excepto 'Fecha' si quieres seguridad.
+        df_editor = df[["Fecha", "Categoria", "Descripcion", "Importe", "Es_Fijo"]].copy()
+        
+        # Configuramos el editor asegurando que las columnas sean editables
         edited_df = st.data_editor(
             df_editor,
             column_config={
-                "Categoria": st.column_config.SelectboxColumn("Categoría", options=cats_list),
-                "Importe": st.column_config.TextColumn("Importe (Cant.)"),
-                "Es_Fijo": st.column_config.SelectboxColumn("Fijo", options=["SÍ", "NO"]),
-                "Fecha": st.column_config.TextColumn(disabled=True),
-                "Descripcion": st.column_config.TextColumn(disabled=True)
+                "Categoria": st.column_config.SelectboxColumn("Categoría", options=cats_list, disabled=False),
+                "Descripcion": st.column_config.TextColumn("Descripción", disabled=False),
+                "Importe": st.column_config.TextColumn("Importe (Cant.)", disabled=False),
+                "Es_Fijo": st.column_config.SelectboxColumn("Fijo", options=["SÍ", "NO"], disabled=False),
+                "Fecha": st.column_config.TextColumn("Fecha", disabled=True) # Mantenemos Fecha bloqueada por seguridad de formato
             },
             use_container_width=True,
-            num_rows="fixed"
+            num_rows="fixed" # Mantenemos el número de filas para no desajustar el Excel
         )
 
-        if st.button("💾 Guardar todos los cambios en la Nube"):
+        if st.button("💾 Guardar cambios de este año en la Nube"):
             with st.spinner("Actualizando Google Sheets..."):
                 try:
-                    # Preparamos los datos de las columnas C (Cat), E (Importe) y F (Es_Fijo)
-                    # Nota: Esto actualiza el bloque completo basándose en el orden actual.
-                    vals_cat = [[x] for x in edited_df["Categoria"].tolist()]
-                    vals_imp = [[str(x)] for x in edited_df["Importe"].tolist()]
-                    vals_fijo = [[x] for x in edited_df["Es_Fijo"].tolist()]
+                    # Obtenemos los índices originales para saber dónde escribir
+                    # Como df_raw es la hoja completa y 'df' es el filtro, calculamos el rango:
+                    indices_originales = df.index + 2 # +2 porque Sheets empieza en 1 y la fila 1 es cabecera
                     
-                    rango_fin = len(vals_cat) + 1
-                    sheet.update(f"C2:C{rango_fin}", vals_cat)
-                    sheet.update(f"E2:E{rango_fin}", vals_imp)
-                    sheet.update(f"F2:F{rango_fin}", vals_fijo)
+                    # Para simplificar y asegurar que NO QUITE NADA, actualizamos fila a fila 
+                    # los cambios realizados en el bloque filtrado.
+                    batch_data = []
+                    for idx, row in edited_df.iterrows():
+                        actual_row_in_sheet = idx + 2
+                        # Definimos el rango de la fila completa de la hoja (A a F)
+                        # Fecha(A), Tipo(B), Cat(C), Desc(D), Imp(E), Fijo(F)
+                        # Pero solo actualizamos las columnas que hemos editado: C, D, E, F
+                        rango_celdas = f"C{actual_row_in_sheet}:F{actual_row_in_sheet}"
+                        
+                        # Los datos deben ser una lista de listas
+                        nuevos_valores = [[row["Categoria"], row["Descripcion"], row["Importe"], row["Es_Fijo"]]]
+                        sheet.update(rango_celdas, nuevos_valores)
                     
-                    st.success("¡Importes, Categorías y Fijos actualizados!")
+                    st.success("✅ ¡Base de datos sincronizada con éxito!")
                     st.rerun()
                 except Exception as e:
                     st.error(f"Error al guardar: {e}")
+    else:
+        st.info("No hay datos cargados para editar.")
