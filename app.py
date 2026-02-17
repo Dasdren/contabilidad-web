@@ -8,7 +8,7 @@ import numpy as np
 import google.generativeai as genai
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Santander IA Expert 2026", layout="wide", page_icon="📈")
+st.set_page_config(page_title="Santander IA Expert", layout="wide", page_icon="🏦")
 
 # --- CONEXIÓN GOOGLE SHEETS ---
 def conectar_google_sheets():
@@ -20,34 +20,30 @@ def conectar_google_sheets():
         sheet = client.open("Contabilidad_App").sheet1
         return sheet
     except:
-        st.error("⚠️ Error de conexión con Google Sheets. Revisa tus Secrets.")
+        st.error("⚠️ Error de conexión con la base de datos.")
         st.stop()
 
 sheet = conectar_google_sheets()
 
-# --- IA: EXPERTO FINANCIERO (CONEXIÓN CORREGIDA) ---
+# --- LÓGICA DEL GEM: EXPERTO FINANCIERO ---
 def llamar_experto_ia(contexto):
     try:
         genai.configure(api_key=st.secrets["gemini_api_key"])
-        # Usamos el nombre de modelo más compatible
         model = genai.GenerativeModel('gemini-1.5-flash')
         
+        # Aquí inyectamos la personalidad de tu Gem
         instrucciones_gem = """
-        Eres el 'Experto Financiero' personal del usuario. 
-        Tu misión es analizar los movimientos bancarios del Santander.
-        Personalidad: Analítico, directo, con visión de ahorro a largo plazo.
-        Analiza los datos y proporciona:
-        1. Estado de salud financiera (Rating A+ a E).
-        2. Alerta de 'Fugas de Capital' (Gastos variables excesivos).
-        3. Plan de acción concreto para este mes.
+        Eres el 'Experto Financiero'. Analizas datos bancarios con rigor y audacia.
+        Tu tono es profesional, con toques de humor inteligente y siempre enfocado a la libertad financiera.
+        Dime qué estoy haciendo mal, dónde están los gastos 'vampiro' y dame un plan de ahorro real.
         """
         
-        response = model.generate_content(f"{instrucciones_gem}\n\nDATOS:\n{contexto}")
+        response = model.generate_content(f"{instrucciones_gem}\n\nDATOS FINANCIEROS:\n{contexto}")
         return response.text
     except Exception as e:
-        return f"❌ Error de conexión con el Experto: {str(e)}"
+        return f"❌ Error al conectar con tu Gem: {str(e)}"
 
-# --- LIMPIEZA Y CARGA ---
+# --- CARGA Y LIMPIEZA ---
 def limpiar_importe(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     s = str(valor).strip().replace('"', '').replace(' EUR', '').replace('−', '-')
@@ -59,7 +55,6 @@ def limpiar_importe(valor):
 def load_data():
     records = sheet.get_all_records()
     df = pd.DataFrame(records)
-    # Columnas: Fecha, Tipo, Categoria, Descripcion, Importe, Es_Fijo
     df["Importe_Num"] = df["Importe"].apply(limpiar_importe)
     df["Fecha_DT"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors='coerce')
     df["Año"] = df["Fecha_DT"].dt.year
@@ -68,84 +63,74 @@ def load_data():
 
 # --- INTERFAZ ---
 df = load_data()
-st.title("🏦 Santander Smart Dashboard 2026")
+st.title("📊 Centro de Control: Experto Financiero")
 
-# Selector de Año en Sidebar (Desde 2025)
+# Histórico desde 2025
 años = sorted([int(a) for a in df["Año"].dropna().unique() if a >= 2025], reverse=True)
 if not años: años = [2026]
-año_sel = st.sidebar.selectbox("📅 Año Fiscal", años)
-df_year = df[df["Año"] == año_sel]
+año_sel = st.sidebar.selectbox("📅 Seleccionar Año Histórico", años)
+df_year = df[df["Año"] == año_sel].copy()
 
-t1, t2, t3, t4 = st.tabs(["🏠 Resumen Anual", "📅 Planificador de Fijos", "🤖 Experto Financiero Gem", "📂 Editor Vivo"])
+t1, t2, t3, t4 = st.tabs(["🏠 Resumen General", "📅 Planificador de Fijos", "🤖 Consultar Gem Experto", "📂 Editor Vivo"])
 
 with t1:
     if not df_year.empty:
-        # 1. BALANCE ANUAL
-        ingresos = df_year[df_year["Importe_Num"] > 0]["Importe_Num"].sum()
-        gastos = abs(df_year[df_year["Importe_Num"] < 0]["Importe_Num"].sum())
-        balance = ingresos - gastos
-        ahorro_pct = (balance / ingresos * 100) if ingresos > 0 else 0
-
+        # MÉTRICAS ANUALES
+        ing = df_year[df_year["Importe_Num"] > 0]["Importe_Num"].sum()
+        gas = abs(df_year[df_year["Importe_Num"] < 0]["Importe_Num"].sum())
+        bal = ing - gas
+        
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💰 Ingresos Año", f"{ingresos:,.2f} €")
-        c2.metric("📉 Gastos Año", f"{gastos:,.2f} €", delta_color="inverse")
-        c3.metric("⚖️ Balance Neto", f"{balance:,.2f} €")
-        c4.metric("📈 % Ahorro", f"{ahorro_pct:.1f}%")
+        c1.metric("Ingresos Anuales", f"{ing:,.2f} €")
+        c2.metric("Gastos Anuales", f"{gas:,.2f} €", delta_color="inverse")
+        c3.metric("Balance Neto", f"{bal:,.2f} €")
+        c4.metric("% Ahorro", f"{(bal/ing*100 if ing>0 else 0):.1f}%")
 
         st.divider()
 
-        # 2. GRÁFICAS DE CONTROL
-        col_g1, col_g2 = st.columns([2, 1])
-        with col_g1:
-            st.subheader("📊 Flujo de Caja Mensual")
-            df_mes = df_year.groupby(["Mes", "Tipo"])["Importe_Num"].sum().abs().reset_index()
-            fig_bar = px.bar(df_mes, x="Mes", y="Importe_Num", color="Tipo", barmode="group",
-                             color_discrete_map={"Ingreso": "#2ecc71", "Gasto": "#e74c3c"})
-            st.plotly_chart(fig_bar, use_container_width=True)
-        
-        with col_g2:
-            st.subheader("🍩 Gastos por Categoría")
-            fig_pie = px.pie(df_year[df_year["Importe_Num"]<0], values=abs(df_year["Importe_Num"]), names="Categoria", hole=0.4)
+        # GRÁFICAS DE CONTROL (CORREGIDAS)
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.write("**Flujo de Caja Mensual**")
+            df_m = df_year.groupby(["Mes", "Tipo"])["Importe_Num"].sum().abs().reset_index()
+            st.plotly_chart(px.bar(df_m, x="Mes", y="Importe_Num", color="Tipo", barmode="group"), use_container_width=True)
+
+        with col2:
+            st.write("**Gastos por Categoría**")
+            # SOLUCIÓN AL SHAPE ERROR: Filtramos y creamos una columna de valores absolutos en el mismo DF
+            df_gastos = df_year[df_year["Importe_Num"] < 0].copy()
+            df_gastos["Val_Abs"] = df_gastos["Importe_Num"].abs()
+            fig_pie = px.pie(df_gastos, values="Val_Abs", names="Categoria", hole=0.4)
             st.plotly_chart(fig_pie, use_container_width=True)
 
-        # 3. TOP GASTOS
-        st.subheader("🔍 Desglose de Gastos Críticos")
-        st.dataframe(df_year[df_year["Importe_Num"] < 0].sort_values("Importe_Num").head(10)[["Fecha", "Descripcion", "Importe", "Categoria"]], use_container_width=True)
+        st.write("**Sugerencia Rápida:**")
+        st.info("💡 Tu gasto más alto este año ha sido: " + df_gastos.sort_values("Importe_Num").iloc[0]["Descripcion"])
     else:
-        st.info("Sube datos para ver el resumen del año.")
+        st.warning("No hay datos para este año.")
 
 with t3:
-    st.header("🤖 Consultoría con Experto Financiero")
-    st.write("Haz clic en el botón para que tu 'Gem' analice tu historial completo del año.")
+    st.header("🤖 Gem: Experto Financiero")
+    st.write("Pulsa el botón para enviar tu balance actual a tu consultor personal.")
     
-    if st.button("✨ Ejecutar Análisis Estratégico", type="primary"):
-        with st.spinner("Tu Experto Financiero está procesando los números..."):
+    if st.button("✨ Analizar Finanzas con Gem", type="primary"):
+        with st.spinner("Conectando con tu experto..."):
             # Resumen para la IA
-            top_gastos = df_year[df_year["Importe_Num"] < 0].sort_values("Importe_Num").head(5).to_string()
-            fijos_total = df_year[df_year["Es_Fijo"] == "SÍ"]["Importe_Num"].sum()
+            top = df_year[df_year["Importe_Num"] < 0].sort_values("Importe_Num").head(5).to_string()
+            ctx = f"Balance: {bal}€ | Ingresos: {ing}€ | Gastos: {gas}€\nGastos Críticos:\n{top}"
             
-            contexto = f"""
-            Año: {año_sel} | Balance: {balance}€ | Ingresos: {ingresos}€ | Gastos: {gastos}€
-            Total Gastos Fijos: {abs(fijos_total)}€
-            Mayores gastos: {top_gastos}
-            """
-            
-            informe = llamar_experto_ia(contexto)
-            st.markdown(f"### 🖋️ Informe del Experto\n{informe}")
+            informe = llamar_experto_ia(ctx)
+            st.markdown(f"### 🖋️ Diagnóstico de tu Experto\n{informe}")
 
 with t4:
-    st.header("📂 Gestión de Gastos Fijos")
-    st.write("Modifica la columna **Es_Fijo** y pulsa Guardar para actualizar tu planificador.")
-    df_editor = df_year[["Fecha", "Descripcion", "Importe", "Es_Fijo"]].copy()
+    st.header("📂 Editor de Datos")
+    st.write("Modifica aquí qué gastos son fijos y sincroniza con Google Sheets.")
+    df_ed = df_year[["Fecha", "Descripcion", "Importe", "Es_Fijo"]].copy()
     
-    edited_df = st.data_editor(df_editor, column_config={
-        "Es_Fijo": st.column_config.SelectboxColumn("Gasto Fijo", options=["SÍ", "NO"])
-    }, disabled=["Fecha", "Descripcion", "Importe"], use_container_width=True)
+    res = st.data_editor(df_ed, column_config={
+        "Es_Fijo": st.column_config.SelectboxColumn("Fijo", options=["SÍ", "NO"])
+    }, use_container_width=True)
 
-    if st.button("💾 Sincronizar con Google Sheets"):
-        # Importante: Actualizamos el histórico completo
-        indices_fijos = edited_df["Es_Fijo"].values.tolist()
-        # Nota: Aquí actualizamos solo el bloque visualizado para evitar desajustes
-        sheet.update(f"F2:F{len(indices_fijos)+1}", [[x] for x in indices_fijos])
-        st.success("¡Sincronizado!")
+    if st.button("💾 Guardar Cambios"):
+        sheet.update(f"F2:F{len(res)+1}", [[x] for x in res["Es_Fijo"].values.tolist()])
+        st.success("¡Datos sincronizados!")
         st.rerun()
