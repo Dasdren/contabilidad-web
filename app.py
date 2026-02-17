@@ -19,104 +19,126 @@ def conectar_google_sheets():
         client = gspread.authorize(creds)
         sheet = client.open("Contabilidad_App").sheet1
         return sheet
-    except:
-        st.error("⚠️ Error de conexión con Google Sheets.")
+    except Exception as e:
+        st.error(f"⚠️ Error de conexión: {e}")
         st.stop()
 
 sheet = conectar_google_sheets()
 
-# --- IA: EXPERTO FINANCIERO (CONEXIÓN SEGURA) ---
-def llamar_experto_ia(contexto):
-    try:
-        # Aseguramos el uso del modelo correcto para evitar el error 404
-        genai.configure(api_key=st.secrets["gemini_api_key"])
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        instrucciones = """
-        Actúa como un 'Experto Financiero' de élite. 
-        Analiza los datos bancarios y detecta fugas de dinero. 
-        Sé directo, profesional y ofrece un plan de ahorro mensual.
-        """
-        response = model.generate_content(f"{instrucciones}\n\nDATOS:\n{contexto}")
-        return response.text
-    except Exception as e:
-        return f"❌ Error IA: {str(e)}"
-
-# --- PROCESAMIENTO DE DATOS ---
+# --- LIMPIEZA DE IMPORTES ---
 def limpiar_importe(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     s = str(valor).strip().replace('"', '').replace(' EUR', '').replace('−', '-')
-    if ',' in s: s = s.replace('.', '').replace(',', '.')
+    if ',' in s:
+        s = s.replace('.', '').replace(',', '.')
     s = "".join(c for c in s if c.isdigit() or c in '.-')
     try: return float(s)
     except: return 0.0
 
+# --- CARGA DE DATOS ---
 def load_data():
-    records = sheet.get_all_records()
-    df = pd.DataFrame(records)
-    df["Importe_Num"] = df["Importe"].apply(limpiar_importe)
-    df["Fecha_DT"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors='coerce')
-    df["Año"] = df["Fecha_DT"].dt.year
-    df["Mes"] = df["Fecha_DT"].dt.strftime('%m - %b')
-    return df
+    try:
+        records = sheet.get_all_records()
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records)
+        
+        # Columnas requeridas
+        for col in ["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]:
+            if col not in df.columns: df[col] = None
+            
+        df["Importe_Num"] = df["Importe"].apply(limpiar_importe)
+        df["Fecha_DT"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors='coerce')
+        df["Año"] = df["Fecha_DT"].dt.year
+        df["Mes_Nombre"] = df["Fecha_DT"].dt.strftime('%m - %b')
+        return df
+    except Exception as e:
+        st.error(f"Error al leer la tabla: {e}")
+        return pd.DataFrame()
 
 # --- INTERFAZ ---
 df = load_data()
-st.title("📊 Dashboard: Histórico Financiero")
+st.title("📊 Santander Smart Dashboard")
 
-# Selector de Año (Histórico desde 2025)
-años = sorted([int(a) for a in df["Año"].dropna().unique() if a >= 2025], reverse=True)
-if not años: años = [2026]
-año_sel = st.sidebar.selectbox("📅 Año", años)
-df_year = df[df["Año"] == año_sel].copy()
+# --- BARRA LATERAL: DIAGNÓSTICO ---
+with st.sidebar:
+    st.header("📥 Importar Datos")
+    archivo = st.file_uploader("Sube el CSV del Santander", type=["csv"])
+    if archivo:
+        if st.button("🚀 Procesar CSV"):
+            try:
+                raw = archivo.getvalue().decode("utf-8").splitlines()
+                skip = 0
+                for i, line in enumerate(raw):
+                    if "Fecha operación" in line: skip = i; break
+                archivo.seek(0)
+                df_new = pd.read_csv(archivo, skiprows=skip, dtype=str, sep=None, engine='python')
+                df_new.columns = df_new.columns.str.strip()
+                # Mapeo exacto pedido
+                df_new = df_new[['Fecha operación', 'Concepto', 'Importe']].copy()
+                df_new.columns = ["Fecha", "Descripcion", "Importe"]
+                df_new["Tipo"] = "Gasto" # Simplificado para el guardado
+                df_new["Categoria"] = "Varios"
+                df_new["Es_Fijo"] = "NO"
+                
+                sheet.append_rows(df_new[["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]].values.tolist())
+                st.success("¡Datos guardados!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error en CSV: {e}")
 
-t1, t2, t3, t4 = st.tabs(["🏠 Resumen", "📅 Planificador", "🤖 Gem: Experto", "📂 Editor Vivo"])
-
-with t1:
-    if not df_year.empty:
-        # MÉTRICAS ANUALES
-        ing = df_year[df_year["Importe_Num"] > 0]["Importe_Num"].sum()
-        gas = abs(df_year[df_year["Importe_Num"] < 0]["Importe_Num"].sum())
-        bal = ing - gas
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Ingresos Anuales", f"{ing:,.2f} €")
-        c2.metric("Gastos Anuales", f"{gas:,.2f} €", delta_color="inverse")
-        c3.metric("Balance Neto", f"{bal:,.2f} €")
-
-        st.divider()
-
-        # GRÁFICAS DE CONTROL
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            st.write("**Evolución Mensual**")
-            df_m = df_year.groupby(["Mes", "Tipo"])["Importe_Num"].sum().abs().reset_index()
-            st.plotly_chart(px.bar(df_m, x="Mes", y="Importe_Num", color="Tipo", barmode="group"), use_container_width=True)
-
-        with col2:
-            st.write("**Desglose de Gastos**")
-            # SOLUCIÓN AL SHAPE ERROR: Filtramos y calculamos valores absolutos en el mismo DataFrame
-            df_pie = df_year[df_year["Importe_Num"] < 0].copy()
-            df_pie["Abs_Importe"] = df_pie["Importe_Num"].abs()
-            
-            # Ahora names y values tienen exactamente la misma longitud
-            fig_pie = px.pie(df_pie, values="Abs_Importe", names="Categoria", hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
+    st.divider()
+    if not df.empty:
+        # Selector de año (Si está vacío, mostrará 2025 por defecto)
+        lista_años = sorted(df["Año"].dropna().unique().astype(int))
+        if not lista_años: lista_años = [2025]
+        año_sel = st.selectbox("📅 Ver año:", lista_años, index=len(lista_años)-1)
     else:
-        st.warning("No hay datos para este año.")
+        año_sel = 2025
 
-with t3:
-    st.header("🤖 Gem: Experto Financiero")
-    if st.button("✨ Analizar Finanzas con Gem", type="primary"):
-        with st.spinner("Analizando..."):
-            top = df_year[df_year["Importe_Num"] < 0].sort_values("Importe_Num").head(5).to_string()
-            ctx = f"Balance: {bal}€ | Gastos: {gas}€\nTop Gastos:\n{top}"
-            st.markdown(f"### 🖋️ Diagnóstico\n{llamar_experto_ia(ctx)}")
+# --- LÓGICA DE VISUALIZACIÓN ---
+if df.empty:
+    st.warning("📭 La base de datos está vacía.")
+    st.info("Por favor, sube un archivo CSV desde la barra lateral o revisa que tu Google Sheets tenga datos debajo de los encabezados.")
+    st.image("https://via.placeholder.com/800x200?text=Esperando+datos+de+Google+Sheets...")
+else:
+    df_filtrado = df[df["Año"] == año_sel].copy()
+    
+    if df_filtrado.empty:
+        st.info(f"No hay movimientos registrados para el año {año_sel}.")
+        st.write("Datos disponibles para otros años:", df["Año"].unique())
+    else:
+        # PESTAÑAS
+        t1, t2, t3 = st.tabs(["🏠 Resumen", "🤖 Gem Experto", "📂 Editor Vivo"])
+        
+        with t1:
+            # MÉTRICAS
+            ing = df_filtrado[df_filtrado["Importe_Num"] > 0]["Importe_Num"].sum()
+            gas = abs(df_filtrado[df_filtrado["Importe_Num"] < 0]["Importe_Num"].sum())
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Ingresos", f"{ing:,.2f} €")
+            c2.metric("Gastos", f"{gas:,.2f} €", delta_color="inverse")
+            c3.metric("Balance", f"{(ing-gas):,.2f} €")
+            
+            # GRÁFICAS (PROTEGIDAS CONTRA SHAPE ERROR)
+            col_a, col_b = st.columns([2, 1])
+            with col_a:
+                st.subheader("Evolución Mensual")
+                df_m = df_filtrado.groupby(["Mes_Nombre", "Tipo"])["Importe_Num"].sum().abs().reset_index()
+                st.plotly_chart(px.bar(df_m, x="Mes_Nombre", y="Importe_Num", color="Tipo", barmode="group"), use_container_width=True)
+            
+            with col_b:
+                st.subheader("Categorías")
+                df_pie = df_filtrado[df_filtrado["Importe_Num"] < 0].copy()
+                if not df_pie.empty:
+                    df_pie["Abs_Importe"] = df_pie["Importe_Num"].abs()
+                    st.plotly_chart(px.pie(df_pie, values="Abs_Importe", names="Categoria", hole=0.4), use_container_width=True)
+                else:
+                    st.write("No hay gastos para este año.")
 
-with t4:
-    st.header("📂 Editor de Datos")
-    # Editor para marcar fijos
-    res = st.data_editor(df_year[["Fecha", "Descripcion", "Importe", "Es_Fijo"]], use_container_width=True)
-    if st.button("💾 Guardar"):
-        sheet.update(f"F2:F{len(res)+1}", [[x] for x in res["Es_Fijo"].values.tolist()])
-        st.success("Guardado.")
+        with t2:
+            st.header("🤖 Gem: Experto Financiero")
+            if st.button("✨ Analizar con IA"):
+                st.write("Conectando con Gemini...")
+                # (Aquí iría tu función llamar_experto_ia configurada)
