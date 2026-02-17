@@ -43,7 +43,7 @@ def conectar_google_sheets():
         sheet = client.open("Contabilidad_App").sheet1
         return sheet
     except:
-        st.error("⚠️ Error de conexión.")
+        st.error("⚠️ Error de conexión con Google Sheets.")
         st.stop()
 
 sheet = conectar_google_sheets()
@@ -82,10 +82,8 @@ def load_data():
 df_raw = load_data()
 st.title("🌙 Santander Cyber Dashboard")
 
-
 with st.sidebar:
     st.header("📥 Importación Masiva")
-    # AHORA ACEPTA MULTIPLES ARCHIVOS
     archivos = st.file_uploader("Sube uno o varios CSV del Santander", type=["csv"], accept_multiple_files=True)
     
     if archivos:
@@ -93,32 +91,21 @@ with st.sidebar:
             datos_para_subir = []
             for archivo in archivos:
                 try:
-                    # Detectar automáticamente dónde empieza la tabla (rastreo de cabecera)
                     lineas = archivo.getvalue().decode("utf-8").splitlines()
                     skip_rows = 0
                     for i, line in enumerate(lineas):
                         if "Fecha operación" in line:
                             skip_rows = i
                             break
-                    
                     archivo.seek(0)
-                    # El Santander suele usar ';' como separador en CSV
                     sep = ';' if ';' in lineas[skip_rows] else ','
                     df_new = pd.read_csv(archivo, skiprows=skip_rows, sep=sep, dtype=str, engine='python')
-                    
-                    # Limpiar nombres de columnas (quitar espacios invisibles)
                     df_new.columns = df_new.columns.str.strip()
-                    
-                    # Mapeo de columnas solicitado
                     df_new = df_new[['Fecha operación', 'Concepto', 'Importe']].copy()
                     df_new.columns = ["Fecha", "Descripcion", "Importe"]
-                    
-                    # Autodetectar tipo y categoría por defecto
                     df_new["Tipo"] = np.where(df_new["Importe"].apply(limpiar_importe) < 0, "Gasto", "Ingreso")
                     df_new["Categoria"] = "Varios"
                     df_new["Es_Fijo"] = "NO"
-                    
-                    # Añadir al bloque total
                     df_final = df_new[["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]]
                     datos_para_subir.extend(df_final.values.tolist())
                 except Exception as e:
@@ -138,18 +125,15 @@ df = df_raw[df_raw["Año"] == año_sel].copy() if not df_raw.empty else pd.DataF
 
 t1, t2, t3, t4 = st.tabs(["📊 Resumen Ejecutivo", "📅 Planificador Fijos", "🤖 Experto IA", "📂 Editor Vivo"])
 
-# --- TAB 1: RESUMEN ---
 with t1:
     if not df.empty:
         ing = df[df["Importe_Num"] > 0]["Importe_Num"].sum()
         gas = abs(df[df["Importe_Num"] < 0]["Importe_Num"].sum())
         bal = ing - gas
-        
         c1, c2, c3 = st.columns(3)
         with c1: st.markdown(f'<p class="label-led">Ingresos</p><p class="green-led">{ing:,.2f} €</p>', unsafe_allow_html=True)
         with c2: st.markdown(f'<p class="label-led">Gastos</p><p class="red-led">{gas:,.2f} €</p>', unsafe_allow_html=True)
         with c3: st.markdown(f'<p class="label-led">Balance</p><p class="blue-led">{bal:,.2f} €</p>', unsafe_allow_html=True)
-
         st.divider()
         g1, g2 = st.columns([2, 1])
         with g1:
@@ -161,36 +145,62 @@ with t1:
             df_pie = df[df["Importe_Num"] < 0].copy()
             df_pie["Val"] = df_pie["Importe_Num"].abs()
             st.plotly_chart(px.pie(df_pie, values="Val", names="Categoria", hole=0.5, template="plotly_dark"), use_container_width=True)
-    else:
-        st.info("Sube archivos CSV para ver el análisis.")
 
-# --- TAB 2: PLANIFICADOR DE FIJOS ---
 with t2:
     st.header("📋 Suelo de Gastos Fijos")
     if not df.empty:
         fijos = df[(df["Es_Fijo"].str.upper() == "SÍ") & (df["Importe_Num"] < 0)]
         presupuesto = fijos.drop_duplicates(subset=['Descripcion'], keep='last')
-        
         total_f = abs(presupuesto['Importe_Num'].sum())
         st.markdown(f'<p class="label-led">Necesidad Mensual</p><p class="blue-led">{total_f:,.2f} €</p>', unsafe_allow_html=True)
         st.dataframe(presupuesto[["Descripcion", "Importe", "Categoria"]], use_container_width=True)
-    else:
-        st.write("Sin datos fijos.")
 
-# --- TAB 3: IA ---
 with t3:
     st.header("🤖 Consultoría Experto Gem")
     if st.button("✨ Ejecutar Análisis Estratégico"):
         with st.spinner("Analizando..."):
-            if not df.empty:
-                resumen = f"Ingresos: {ing}€, Gastos: {gas}€, Balance: {bal}€"
-                analisis = llamar_experto_ia(resumen)
-                st.markdown(f"### 💡 Informe:\n{analisis}")
-            else:
-                st.error("Sube datos primero.")
+            resumen = f"Ingresos: {ing}€, Gastos: {gas}€, Balance: {bal}€"
+            analisis = llamar_experto_ia(resumen)
+            st.markdown(f"### 💡 Informe:\n{analisis}")
 
-# --- TAB 4: EDITOR ---
+# --- TAB 4: EDITOR VIVO (AHORA CON EDICIÓN DE CANTIDAD) ---
 with t4:
     st.header("📂 Editor de Datos")
+    st.write("Puedes modificar la **Categoría**, el **Importe** y si es **Fijo**. Pulsa Guardar al terminar.")
     if not df.empty:
-        st.data_editor(df[["Fecha", "Descripcion", "Importe", "Categoria", "Es_Fijo"]], use_container_width=True)
+        # Definimos qué columnas son editables y cuáles no
+        df_editor = df[["Fecha", "Categoria", "Descripcion", "Importe", "Es_Fijo"]].copy()
+        
+        cats_list = ["Varios", "Vivienda", "Ocio", "Suministros", "Alimentación", "Transporte", "Suscripciones", "Salud"]
+        
+        edited_df = st.data_editor(
+            df_editor,
+            column_config={
+                "Categoria": st.column_config.SelectboxColumn("Categoría", options=cats_list),
+                "Importe": st.column_config.TextColumn("Importe (Cant.)"),
+                "Es_Fijo": st.column_config.SelectboxColumn("Fijo", options=["SÍ", "NO"]),
+                "Fecha": st.column_config.TextColumn(disabled=True),
+                "Descripcion": st.column_config.TextColumn(disabled=True)
+            },
+            use_container_width=True,
+            num_rows="fixed"
+        )
+
+        if st.button("💾 Guardar todos los cambios en la Nube"):
+            with st.spinner("Actualizando Google Sheets..."):
+                try:
+                    # Preparamos los datos de las columnas C (Cat), E (Importe) y F (Es_Fijo)
+                    # Nota: Esto actualiza el bloque completo basándose en el orden actual.
+                    vals_cat = [[x] for x in edited_df["Categoria"].tolist()]
+                    vals_imp = [[str(x)] for x in edited_df["Importe"].tolist()]
+                    vals_fijo = [[x] for x in edited_df["Es_Fijo"].tolist()]
+                    
+                    rango_fin = len(vals_cat) + 1
+                    sheet.update(f"C2:C{rango_fin}", vals_cat)
+                    sheet.update(f"E2:E{rango_fin}", vals_imp)
+                    sheet.update(f"F2:F{rango_fin}", vals_fijo)
+                    
+                    st.success("¡Importes, Categorías y Fijos actualizados!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al guardar: {e}")
