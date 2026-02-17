@@ -105,15 +105,16 @@ if archivo:
             
             # Unimos con el histórico para ver si se repiten en meses distintos
             if not df_hist.empty:
+                df_hist_tmp = df_hist.copy()
+                df_hist_tmp['Mes'] = pd.to_datetime(df_hist_tmp['Fecha'], dayfirst=True, errors='coerce').dt.to_period('M')
                 full_check = pd.concat([
-                    df_hist[["Descripcion", "Importe_Num", "Fecha_DT"]].rename(columns={"Fecha_DT": "Mes"}),
-                    df_new[["Descripcion", "Importe_Num", "Mes"]].rename(columns={"Mes": "Mes"})
+                    df_hist_tmp[["Descripcion", "Importe_Num", "Mes"]],
+                    df_new[["Descripcion", "Importe_Num", "Mes"]]
                 ])
-                full_check["Mes"] = pd.to_datetime(full_check["Mes"]).dt.to_period('M')
             else:
                 full_check = df_new[["Descripcion", "Importe_Num", "Mes"]].copy()
 
-            # Marcamos como fijo si misma descripción e importe aparecen en >1 mes
+            # Marcamos como fijo si misma descripción e importe aparecen en >1 mes distinto
             frecuencia = full_check.groupby(['Descripcion', 'Importe_Num'])['Mes'].nunique().reset_index()
             fijos_list = frecuencia[frecuencia['Mes'] > 1]
             
@@ -140,17 +141,17 @@ with t1:
         c1, c2, c3 = st.columns(3)
         c1.metric("Balance Total", f"{df_hist['Importe_Num'].sum():,.2f} €")
         c2.metric("Ingresos", f"{df_hist[df_hist['Importe_Num']>0]['Importe_Num'].sum():,.2f} €")
-        c3.metric("Gastos", f"{df_hist[df_hist['Importe_Num']<0]['Importe_Num'].sum():,.2f} €", delta_color="inverse")
+        c3.metric("Gastos", f"{df_hist[df_hist['Importe_Num']<0]['Importe_Num'].sum():,.2f} €")
         st.plotly_chart(px.line(df_hist.sort_values("Fecha_DT"), x="Fecha_DT", y="Importe_Num", color="Tipo"), use_container_width=True)
 
 with t2:
     st.subheader("📋 Planificador Mensual (Gastos Fijos)")
-    st.info("Cada gasto fijo solo cuenta una vez para tu previsión mensual.")
+    st.info("Aquí cada gasto fijo solo cuenta una vez para tu previsión mensual.")
     if not df_hist.empty:
         fijos_only = df_hist[(df_hist["Es_Fijo_Clean"] == "SÍ") & (df_hist["Importe_Num"] < 0)]
-        # DEDUPLICAR: Solo nos importa el concepto y el importe una vez
+        # DEDUPLICAR: Solo nos importa el concepto y el importe una vez para el presupuesto
         presupuesto = fijos_only.drop_duplicates(subset=['Descripcion', 'Importe_Num'], keep='last')
-        st.metric("Total Suelo Mensual", f"{presupuesto['Importe_Num'].sum():,.2f} €")
+        st.metric("Total Suelo Mensual (Previsión)", f"{presupuesto['Importe_Num'].sum():,.2f} €")
         st.dataframe(presupuesto[["Descripcion", "Importe_Num"]], use_container_width=True)
 
 with t4:
