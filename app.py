@@ -8,9 +8,8 @@ import numpy as np
 import google.generativeai as genai
 
 # --- CONFIGURACIÓN VISUAL ---
-st.set_page_config(page_title="Santander Cyber Dashboard", layout="wide", page_icon="🌙")
+st.set_page_config(page_title="Multi-Bank Cyber Dashboard", layout="wide", page_icon="🌙")
 
-# --- CSS: MODO OSCURO TOTAL Y COLORES LED ---
 st.markdown("""
 <style>
     .stApp { background-color: #000000 !important; color: #FFFFFF !important; }
@@ -18,10 +17,10 @@ st.markdown("""
     [data-testid="metric-container"] {
         background-color: #111111; border: 1px solid #333333; padding: 20px; border-radius: 12px; text-align: center;
     }
-    .green-led { color: #2ecc71 !important; font-size: 2.5rem; font-weight: 800; }
-    .red-led { color: #e63946 !important; font-size: 2.5rem; font-weight: 800; }
-    .blue-led { color: #3498db !important; font-size: 2.5rem; font-weight: 800; }
-    .label-led { color: #AAAAAA !important; font-size: 1rem; text-transform: uppercase; }
+    .green-led { color: #2ecc71 !important; font-size: 2.2rem; font-weight: 800; text-shadow: 0 0 10px #2ecc7144; }
+    .red-led { color: #e63946 !important; font-size: 2.2rem; font-weight: 800; text-shadow: 0 0 10px #e6394644; }
+    .blue-led { color: #3498db !important; font-size: 2.2rem; font-weight: 800; text-shadow: 0 0 10px #3498db44; }
+    .label-led { color: #AAAAAA !important; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 1px; }
     .stTabs [data-baseweb="tab-list"] { background-color: #000000; }
     .stDataFrame, [data-testid="stDataEditor"] { background-color: #111111 !important; }
 </style>
@@ -42,18 +41,7 @@ def conectar_google_sheets():
 
 sheet = conectar_google_sheets()
 
-# --- IA: EXPERTO FINANCIERO ---
-def llamar_experto_ia(contexto):
-    try:
-        genai.configure(api_key=st.secrets["gemini_api_key"])
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt = f"Eres un experto financiero. Analiza estos datos: {contexto}. Sé breve y profesional."
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        return f"Error en IA: {e}"
-
-# --- CARGA Y LIMPIEZA ---
+# --- LIMPIEZA DE IMPORTES ---
 def limpiar_importe(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     s = str(valor).strip().replace('"', '').replace(' EUR', '').replace('−', '-')
@@ -62,9 +50,14 @@ def limpiar_importe(valor):
     try: return float(s)
     except: return 0.0
 
+# --- CARGA DE DATOS ---
 def load_data():
     records = sheet.get_all_records()
     df = pd.DataFrame(records)
+    # Estructura esperada: Fecha | Tipo | Categoria | Descripcion | Importe | Es_Fijo | Banco
+    for col in ["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo", "Banco"]:
+        if col not in df.columns: df[col] = "Desconocido"
+    
     if not df.empty:
         df["Importe_Num"] = df["Importe"].apply(limpiar_importe)
         df["Fecha_DT"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors='coerce')
@@ -74,113 +67,121 @@ def load_data():
 
 # --- INTERFAZ ---
 df_raw = load_data()
-st.title("🌙 Santander Cyber Dashboard")
+st.title("🌙 Multi-Bank Cyber Dashboard")
 
 with st.sidebar:
     st.header("📥 Importación Masiva")
-    archivos = st.file_uploader("Sube uno o varios CSV", type=["csv"], accept_multiple_files=True)
-    if archivos:
-        if st.button("🚀 Procesar e Importar Todo"):
-            datos_para_subir = []
-            for archivo in archivos:
-                try:
-                    lineas = archivo.getvalue().decode("utf-8").splitlines()
-                    skip_rows = 0
-                    for i, line in enumerate(lineas):
-                        if "Fecha operación" in line: skip_rows = i; break
-                    archivo.seek(0)
-                    sep = ';' if ';' in lineas[skip_rows] else ','
-                    df_new = pd.read_csv(archivo, skiprows=skip_rows, sep=sep, dtype=str, engine='python')
-                    df_new.columns = df_new.columns.str.strip()
-                    df_new = df_new[['Fecha operación', 'Concepto', 'Importe']].copy()
-                    df_new.columns = ["Fecha", "Descripcion", "Importe"]
-                    df_new["Tipo"] = np.where(df_new["Importe"].apply(limpiar_importe) < 0, "Gasto", "Ingreso")
-                    df_new["Categoria"] = "Varios"; df_new["Es_Fijo"] = "NO"
-                    datos_para_subir.extend(df_new[["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]].values.tolist())
-                except Exception as e: st.error(f"Error en {archivo.name}: {e}")
-            if datos_para_subir:
-                sheet.append_rows(datos_para_subir); st.success("✅ ¡Hecho!"); st.rerun()
+    banco_csv = st.radio("¿De qué banco es el archivo?", ["Santander", "Cajamar"])
+    archivos = st.file_uploader(f"Subir CSV de {banco_csv}", type=["csv"], accept_multiple_files=True)
+    
+    if archivos and st.button("🚀 Procesar e Importar"):
+        datos_subir = []
+        for archivo in archivos:
+            try:
+                lineas = archivo.getvalue().decode("utf-8").splitlines()
+                skip_rows = 0
+                col_fecha = "Fecha operación" if banco_csv == "Santander" else "Fecha"
+                
+                for i, line in enumerate(lineas):
+                    if col_fecha in line: skip_rows = i; break
+                
+                archivo.seek(0)
+                sep = ';' if ';' in lineas[skip_rows] else ','
+                df_new = pd.read_csv(archivo, skiprows=skip_rows, sep=sep, dtype=str, engine='python')
+                df_new.columns = df_new.columns.str.strip()
+                
+                # Mapeo dinámico según banco
+                df_new = df_new[[col_fecha, 'Concepto', 'Importe']].copy()
+                df_new.columns = ["Fecha", "Descripcion", "Importe"]
+                df_new["Tipo"] = np.where(df_new["Importe"].apply(limpiar_importe) < 0, "Gasto", "Ingreso")
+                df_new["Categoria"] = "Varios"
+                df_new["Es_Fijo"] = "NO"
+                df_new["Banco"] = banco_csv
+                
+                datos_subir.extend(df_new[["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo", "Banco"]].values.tolist())
+            except Exception as e: st.error(f"Error en {archivo.name}: {e}")
+        
+        if datos_subir:
+            sheet.append_rows(datos_subir); st.success("✅ Importado"); st.rerun()
 
     st.divider()
+    st.header("⚙️ Filtros de Vista")
+    vista_banco = st.selectbox("Banco a Visualizar", ["Ambos", "Santander", "Cajamar"])
     años = sorted([int(a) for a in df_raw["Año"].dropna().unique() if a >= 2025], reverse=True)
     año_sel = st.selectbox("Año Actual", años if años else [2026])
 
+# FILTRADO DINÁMICO
 df = df_raw[df_raw["Año"] == año_sel].copy() if not df_raw.empty else pd.DataFrame()
+if vista_banco != "Ambos":
+    df = df[df["Banco"] == vista_banco]
 
-t1, t2, t3, t4 = st.tabs(["📊 Resumen Ejecutivo", "📅 Planificador Fijos", "🤖 Experto IA", "📂 Editor Vivo"])
+t1, t2, t3, t4 = st.tabs(["📊 Resumen", "📅 Planificador Fijos", "🤖 Experto IA", "📂 Editor Vivo"])
 
 with t1:
     if not df.empty:
+        # MÉTRICAS CON COLORES LED
+        c1, c2, c3 = st.columns(3)
         ing = df[df["Importe_Num"] > 0]["Importe_Num"].sum()
         gas = abs(df[df["Importe_Num"] < 0]["Importe_Num"].sum())
-        bal = ing - gas
-        c1, c2, c3 = st.columns(3)
-        c1.markdown(f'<p class="label-led">Ingresos</p><p class="green-led">{ing:,.2f} €</p>', unsafe_allow_html=True)
-        c2.markdown(f'<p class="label-led">Gastos</p><p class="red-led">{gas:,.2f} €</p>', unsafe_allow_html=True)
-        c3.markdown(f'<p class="label-led">Balance</p><p class="blue-led">{bal:,.2f} €</p>', unsafe_allow_html=True)
+        with c1: st.markdown(f'<p class="label-led">Ingresos Total</p><p class="green-led">+{ing:,.2f} €</p>', unsafe_allow_html=True)
+        with c2: st.markdown(f'<p class="label-led">Gastos Total</p><p class="red-led">-{gas:,.2f} €</p>', unsafe_allow_html=True)
+        with c3: st.markdown(f'<p class="label-led">Balance</p><p class="blue-led">{(ing-gas):,.2f} €</p>', unsafe_allow_html=True)
+        
         st.divider()
-        g1, g2 = st.columns([2, 1])
-        with g1:
+        
+        # DOS GRÁFICAS SI ES VISTA "AMBOS"
+        if vista_banco == "Ambos":
+            st.subheader("📉 Comparativa por Entidad")
+            col_s, col_c = st.columns(2)
+            with col_s:
+                st.write("**Santander**")
+                df_s = df[df["Banco"] == "Santander"].groupby(["Mes", "Tipo"])["Importe_Num"].sum().abs().reset_index()
+                st.plotly_chart(px.bar(df_s, x="Mes", y="Importe_Num", color="Tipo", barmode="group", template="plotly_dark", color_discrete_map={"Ingreso": "#2ecc71", "Gasto": "#e63946"}), use_container_width=True)
+            with col_c:
+                st.write("**Cajamar**")
+                df_c = df[df["Banco"] == "Cajamar"].groupby(["Mes", "Tipo"])["Importe_Num"].sum().abs().reset_index()
+                st.plotly_chart(px.bar(df_c, x="Mes", y="Importe_Num", color="Tipo", barmode="group", template="plotly_dark", color_discrete_map={"Ingreso": "#2ecc71", "Gasto": "#e63946"}), use_container_width=True)
+        else:
+            st.subheader(f"📈 Evolución {vista_banco}")
             df_m = df.groupby(["Mes", "Tipo"])["Importe_Num"].sum().abs().reset_index()
-            fig = px.bar(df_m, x="Mes", y="Importe_Num", color="Tipo", barmode="group", template="plotly_dark", color_discrete_map={"Ingreso": "#2ecc71", "Gasto": "#e63946"})
-            st.plotly_chart(fig, use_container_width=True)
-        with g2:
-            df_p = df[df["Importe_Num"] < 0].copy(); df_p["Val"] = df_p["Importe_Num"].abs()
-            st.plotly_chart(px.pie(df_p, values="Val", names="Categoria", hole=0.5, template="plotly_dark"), use_container_width=True)
+            st.plotly_chart(px.bar(df_m, x="Mes", y="Importe_Num", color="Tipo", barmode="group", template="plotly_dark", color_discrete_map={"Ingreso": "#2ecc71", "Gasto": "#e63946"}), use_container_width=True)
 
 with t2:
-    st.header("📋 Suelo de Gastos Fijos")
-    if not df.empty:
-        fijos = df[(df["Es_Fijo"].str.upper() == "SÍ") & (df["Importe_Num"] < 0)]
-        presu = fijos.drop_duplicates(subset=['Descripcion'], keep='last')
-        st.markdown(f'<p class="label-led">Necesidad Mensual</p><p class="blue-led">{abs(presu["Importe_Num"].sum()):,.2f} €</p>', unsafe_allow_html=True)
-        st.dataframe(presu[["Descripcion", "Importe", "Categoria"]], use_container_width=True)
+    st.header("📅 Suelo de Gastos Fijos")
+    fijos = df[(df["Es_Fijo"].str.upper() == "SÍ") & (df["Importe_Num"] < 0)]
+    presu = fijos.drop_duplicates(subset=['Descripcion', 'Banco'], keep='last')
+    st.markdown(f'<p class="label-led">Necesidad Mensual ({vista_banco})</p><p class="blue-led">{abs(presu["Importe_Num"].sum()):,.2f} €</p>', unsafe_allow_html=True)
+    st.dataframe(presu[["Banco", "Descripcion", "Importe", "Categoria"]], use_container_width=True)
 
-with t3:
-    st.header("🤖 Consultoría Experto Gem")
-    if st.button("✨ Ejecutar Análisis Estratégico"):
-        with st.spinner("Analizando..."):
-            resumen = f"Ingresos: {ing}€, Gastos: {gas}€, Balance: {bal}€"
-            st.markdown(f"### 💡 Informe:\n{llamar_experto_ia(resumen)}")
-
-# --- TAB 4: EDITOR VIVO (DESBLOQUEO DEFINITIVO) ---
 with t4:
-    st.header("📂 Editor de Datos")
-    st.write("Haz doble clic en cualquier celda para editar (incluido el Importe).")
+    st.header("📂 Editor Vivo (Importes Editables)")
     if not df.empty:
-        # Aseguramos que Importe_Num sea flotante para el NumberColumn
-        df_editor = df[["Fecha", "Categoria", "Descripcion", "Importe_Num", "Es_Fijo"]].copy()
-        
-        cats = ["Varios", "Vivienda", "Ocio", "Suministros", "Alimentación", "Transporte", "Suscripciones", "Salud"]
+        # Mostrar el Banco en el editor para saber qué editamos
+        df_editor = df[["Fecha", "Banco", "Categoria", "Descripcion", "Importe_Num", "Es_Fijo"]].copy()
         
         edited_df = st.data_editor(
             df_editor,
             column_config={
-                "Importe_Num": st.column_config.NumberColumn(
-                    "Importe (€)", 
-                    help="Cantidad del movimiento",
-                    format="%.2f", 
-                    disabled=False  # <--- DESBLOQUEADO
-                ),
-                "Categoria": st.column_config.SelectboxColumn("Categoría", options=cats, disabled=False),
+                "Importe_Num": st.column_config.NumberColumn("Importe (€)", format="%.2f", disabled=False),
+                "Categoria": st.column_config.SelectboxColumn("Categoría", options=["Varios", "Vivienda", "Ocio", "Alimentación", "Suscripciones", "Salud"], disabled=False),
                 "Descripcion": st.column_config.TextColumn("Descripción", disabled=False),
                 "Es_Fijo": st.column_config.SelectboxColumn("Fijo", options=["SÍ", "NO"], disabled=False),
+                "Banco": st.column_config.TextColumn("Entidad", disabled=True),
                 "Fecha": st.column_config.TextColumn("Fecha", disabled=True)
             },
             use_container_width=True,
             num_rows="fixed"
         )
 
-        if st.button("💾 Guardar cambios en la Nube"):
+        if st.button("💾 Guardar Cambios en la Nube"):
             with st.spinner("Sincronizando..."):
                 try:
-                    # Obtenemos los índices del filtro actual para actualizar las filas correctas
                     for idx, row in edited_df.iterrows():
                         actual_row = idx + 2
                         rango = f"C{actual_row}:F{actual_row}"
-                        # Convertimos el número de vuelta a string para Google Sheets
+                        # Actualizamos Cat, Desc, Imp, Fijo (Columnas C a F)
                         nuevos_datos = [[row["Categoria"], row["Descripcion"], str(row["Importe_Num"]), row["Es_Fijo"]]]
                         sheet.update(rango, nuevos_datos)
-                    st.success("✅ ¡Todo actualizado!")
+                    st.success("✅ ¡Actualizado!")
                     st.rerun()
                 except Exception as e: st.error(f"Error: {e}")
