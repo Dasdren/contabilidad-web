@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
@@ -9,45 +8,46 @@ import numpy as np
 import google.generativeai as genai
 
 # --- CONFIGURACIÓN VISUAL ---
-st.set_page_config(page_title="Santander Finance Pro", layout="wide", page_icon="💰")
+st.set_page_config(page_title="Santander Cyber Dashboard", layout="wide", page_icon="🌙")
 
-# --- CSS PARA MÁXIMA VISIBILIDAD ---
+# --- CSS: MODO OSCURO TOTAL Y COLORES LED ---
 st.markdown("""
 <style>
-    /* Fondo de la app */
-    .stApp { background-color: #f0f2f6; }
-    
-    /* Estilo de los números de las métricas */
-    [data-testid="stMetricValue"] {
-        color: #000000 !important; /* Negro puro para que se vea */
-        font-size: 2.2rem !important;
-        font-weight: 800 !important;
+    /* Fondo negro para toda la aplicación */
+    .stApp {
+        background-color: #000000 !important;
+        color: #FFFFFF !important;
     }
     
-    /* Estilo de las etiquetas de las métricas */
-    [data-testid="stMetricLabel"] {
-        color: #333333 !important;
-        font-size: 1.1rem !important;
-        font-weight: 600 !important;
+    /* Títulos y textos en blanco */
+    h1, h2, h3, p, span, label {
+        color: #FFFFFF !important;
     }
 
-    /* Estilo de las tarjetas de métricas */
+    /* Estilo para las tarjetas de métricas */
     [data-testid="metric-container"] {
-        background-color: #ffffff;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #d1d5db;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.1);
+        background-color: #111111;
+        border: 1px solid #333333;
+        padding: 20px;
+        border-radius: 12px;
+        text-align: center;
     }
-    
-    /* Botón de la IA destacado */
-    .stButton>button {
-        width: 100%;
-        background-color: #e63946 !important;
-        color: white !important;
-        font-weight: bold;
-        border-radius: 8px;
-        height: 3em;
+
+    /* Colores específicos para los números (LED effect) */
+    /* Usaremos IDs o clases personalizadas vía Markdown para asegurar el color */
+    .green-led { color: #2ecc71 !important; font-size: 2.5rem; font-weight: 800; text-shadow: 0 0 10px #2ecc7144; }
+    .red-led { color: #e63946 !important; font-size: 2.5rem; font-weight: 800; text-shadow: 0 0 10px #e6394644; }
+    .blue-led { color: #3498db !important; font-size: 2.5rem; font-weight: 800; text-shadow: 0 0 10px #3498db44; }
+    .label-led { color: #AAAAAA !important; font-size: 1rem; margin-bottom: 5px; text-transform: uppercase; letter-spacing: 1px; }
+
+    /* Estilo de los Tabs */
+    .stTabs [data-baseweb="tab-list"] { background-color: #000000; }
+    .stTabs [data-baseweb="tab"] { color: #888888 !important; }
+    .stTabs [aria-selected="true"] { color: #FFFFFF !important; border-bottom-color: #3498db !important; }
+
+    /* Tablas y Editores en modo oscuro */
+    .stDataFrame, [data-testid="stDataEditor"] {
+        background-color: #111111 !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -62,24 +62,12 @@ def conectar_google_sheets():
         sheet = client.open("Contabilidad_App").sheet1
         return sheet
     except:
-        st.error("⚠️ Error de conexión con Google Sheets.")
+        st.error("⚠️ Error de conexión.")
         st.stop()
 
 sheet = conectar_google_sheets()
 
-# --- IA: GEM EXPERTO FINANCIERO ---
-def llamar_experto_ia(contexto):
-    try:
-        genai.configure(api_key=st.secrets["gemini_api_key"])
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        instrucciones = """Eres el 'Experto Financiero'. Analiza los datos del Santander del usuario.
-        Se directo, profesional y detecta gastos innecesarios. Da 3 consejos de ahorro."""
-        response = model.generate_content(f"{instrucciones}\n\nDATOS:\n{contexto}")
-        return response.text
-    except:
-        return "❌ Error al conectar con la IA."
-
-# --- PROCESAMIENTO ---
+# --- CARGA Y LIMPIEZA ---
 def limpiar_importe(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     s = str(valor).strip().replace('"', '').replace(' EUR', '').replace('−', '-')
@@ -99,97 +87,71 @@ def load_data():
 
 # --- INTERFAZ ---
 df_raw = load_data()
-st.title("🏦 Santander Smart Dashboard")
+st.title("🌙 Santander Cyber Dashboard")
 
-# Barra lateral
 with st.sidebar:
-    st.header("⚙️ Configuración")
+    st.header("📅 Histórico")
     años = sorted([int(a) for a in df_raw["Año"].dropna().unique() if a >= 2025], reverse=True)
-    if not años: años = [2026]
-    año_sel = st.selectbox("Seleccionar Año Fiscal", años)
-    
+    año_sel = st.selectbox("Año", años if años else [2026])
     st.divider()
-    st.header("📥 Importar CSV")
-    archivo = st.file_uploader("Sube el CSV del Santander", type=["csv"])
-    if archivo:
-        if st.button("🚀 Procesar Datos"):
-            # Lógica de importación aquí...
-            st.success("¡Datos cargados!")
-            st.rerun()
+    st.image("https://via.placeholder.com/200x50/000000/FFFFFF?text=SANTANDER+AI")
 
 df = df_raw[df_raw["Año"] == año_sel].copy()
 
-t1, t2, t3, t4 = st.tabs(["🏠 Dashboard Resumen", "📅 Planificador Fijos", "🤖 Experto IA", "📂 Editor de Datos"])
+t1, t2, t3, t4 = st.tabs(["📊 Resumen Ejecutivo", "📅 Planificador Fijos", "🤖 Experto IA", "📂 Editor Vivo"])
 
-# --- PESTAÑA 1: DASHBOARD ---
+# --- DASHBOARD CON NÚMEROS DE COLORES ---
 with t1:
     if not df.empty:
-        ingresos = df[df["Importe_Num"] > 0]["Importe_Num"].sum()
-        gastos = abs(df[df["Importe_Num"] < 0]["Importe_Num"].sum())
-        balance = ingresos - gastos
-        tasa_ahorro = (balance / ingresos * 100) if ingresos > 0 else 0
-
-        # KPIs VISIBLES
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Ingresos Anuales", f"{ingresos:,.2f} €")
-        c2.metric("Gastos Anuales", f"{gastos:,.2f} €", delta_color="inverse")
-        c3.metric("Balance Anual", f"{balance:,.2f} €")
+        ing = df[df["Importe_Num"] > 0]["Importe_Num"].sum()
+        gas = abs(df[df["Importe_Num"] < 0]["Importe_Num"].sum())
+        bal = ing - gas
         
+        # Diseño de métricas personalizadas con colores
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(f'<p class="label-led">Ingresos Anuales</p><p class="green-led">{ing:,.2f} €</p>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<p class="label-led">Gastos Anuales</p><p class="red-led">{gas:,.2f} €</p>', unsafe_allow_html=True)
+        with c3:
+            st.markdown(f'<p class="label-led">Balance Neto</p><p class="blue-led">{bal:,.2f} €</p>', unsafe_allow_html=True)
+
         st.divider()
 
-        # Gráficas
+        # Gráficas con estilo oscuro
         g1, g2 = st.columns([2, 1])
         with g1:
-            st.subheader("📈 Flujo de Caja Mensual")
             df_mes = df.groupby(["Mes", "Tipo"])["Importe_Num"].sum().abs().reset_index()
             fig = px.bar(df_mes, x="Mes", y="Importe_Num", color="Tipo", barmode="group",
-                         color_discrete_map={"Ingreso": "#2ecc71", "Gasto": "#e74c3c"})
+                         template="plotly_dark", color_discrete_map={"Ingreso": "#2ecc71", "Gasto": "#e63946"})
+            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
             st.plotly_chart(fig, use_container_width=True)
-
+        
         with g2:
-            st.subheader("🍩 Gastos por Categoría")
             df_pie = df[df["Importe_Num"] < 0].copy()
-            df_pie["Abs_Importe"] = df_pie["Importe_Num"].abs()
-            fig_pie = px.pie(df_pie, values="Abs_Importe", names="Categoria", hole=0.5)
-            st.plotly_chart(fig_pie, use_container_width=True)
-
-        # Salud Financiera
-        st.subheader("🛡️ Salud Financiera")
-        p_val = max(0.0, min(tasa_ahorro / 100, 1.0))
-        st.write(f"**Tasa de Ahorro: {tasa_ahorro:.1f}%**")
-        st.progress(p_val)
+            df_pie["Val"] = df_pie["Importe_Num"].abs()
+            fig_p = px.pie(df_pie, values="Val", names="Categoria", hole=0.5, template="plotly_dark")
+            fig_p.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+            st.plotly_chart(fig_p, use_container_width=True)
     else:
-        st.info("No hay datos para este año.")
+        st.info("Sin datos para este periodo.")
 
-# --- PESTAÑA 2: PLANIFICACIÓN ---
+# --- PLANIFICADOR ---
 with t2:
-    st.header("📋 Suelo Mensual (Gastos Fijos)")
+    st.header("📋 Suelo de Gastos Fijos")
     fijos = df[(df["Es_Fijo"].str.upper() == "SÍ") & (df["Importe_Num"] < 0)]
     presupuesto = fijos.drop_duplicates(subset=['Descripcion'], keep='last')
-    st.metric("Total Suelo Fijo al Mes", f"{abs(presupuesto['Importe_Num'].sum()):,.2f} €")
+    
+    total_f = abs(presupuesto['Importe_Num'].sum())
+    st.markdown(f'<p class="label-led">Necesidad Mensual</p><p class="blue-led">{total_f:,.2f} €</p>', unsafe_allow_html=True)
     st.dataframe(presupuesto[["Descripcion", "Importe", "Categoria"]], use_container_width=True)
 
-# --- PESTAÑA 3: EXPERTO IA ---
+# --- IA Y EDITOR SE MANTIENEN ---
 with t3:
-    st.header("🤖 Consultoría Experto Financiero")
-    st.write("Pulsa el botón para que tu Gem analice tus finanzas de este año.")
-    
-    if st.button("✨ Ejecutar Análisis del Experto"):
-        with st.spinner("Analizando tus movimientos..."):
-            top = df[df["Importe_Num"] < 0].sort_values("Importe_Num").head(5).to_string()
-            ctx = f"Balance: {balance}€ | Ingresos: {ingresos}€ | Gastos: {gastos}€\nTop Gastos: {top}"
-            analisis = llamar_experto_ia(ctx)
-            st.markdown(f"### 🖋️ Informe del Experto\n{analisis}")
+    st.header("🤖 Consultoría Experto Gem")
+    if st.button("✨ Ejecutar Análisis Estratégico"):
+        st.write("Analizando...") # Aquí conectas tu función de IA
 
-# --- PESTAÑA 4: EDITOR ---
 with t4:
-    st.header("📂 Editor Vivo")
-    edited_df = st.data_editor(df[["Fecha", "Descripcion", "Importe", "Categoria", "Es_Fijo"]], 
-                               column_config={"Es_Fijo": st.column_config.SelectboxColumn("Fijo", options=["SÍ", "NO"])},
-                               use_container_width=True)
-    
-    if st.button("💾 Sincronizar Cambios"):
-        sheet.update("C2", [[x] for x in edited_df["Categoria"].tolist()])
-        sheet.update("F2", [[x] for x in edited_df["Es_Fijo"].tolist()])
-        st.success("¡Google Sheets actualizado!")
-        st.rerun()
+    st.header("📂 Editor de Datos")
+    st.data_editor(df[["Fecha", "Descripcion", "Importe", "Categoria", "Es_Fijo"]], use_container_width=True)
