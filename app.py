@@ -83,10 +83,9 @@ df_raw = load_data()
 st.title("🌙 Santander Cyber Dashboard")
 
 
-
 with st.sidebar:
     st.header("📥 Importación Masiva")
-    # Aceptamos múltiples archivos
+    # AHORA ACEPTA MULTIPLES ARCHIVOS
     archivos = st.file_uploader("Sube uno o varios CSV del Santander", type=["csv"], accept_multiple_files=True)
     
     if archivos:
@@ -94,7 +93,7 @@ with st.sidebar:
             datos_para_subir = []
             for archivo in archivos:
                 try:
-                    # Detectar separador y saltar cabeceras innecesarias
+                    # Detectar automáticamente dónde empieza la tabla (rastreo de cabecera)
                     lineas = archivo.getvalue().decode("utf-8").splitlines()
                     skip_rows = 0
                     for i, line in enumerate(lineas):
@@ -103,28 +102,31 @@ with st.sidebar:
                             break
                     
                     archivo.seek(0)
+                    # El Santander suele usar ';' como separador en CSV
                     sep = ';' if ';' in lineas[skip_rows] else ','
                     df_new = pd.read_csv(archivo, skiprows=skip_rows, sep=sep, dtype=str, engine='python')
                     
-                    # Mapeo de columnas
+                    # Limpiar nombres de columnas (quitar espacios invisibles)
                     df_new.columns = df_new.columns.str.strip()
+                    
+                    # Mapeo de columnas solicitado
                     df_new = df_new[['Fecha operación', 'Concepto', 'Importe']].copy()
                     df_new.columns = ["Fecha", "Descripcion", "Importe"]
                     
-                    # Campos extra para el Excel
+                    # Autodetectar tipo y categoría por defecto
                     df_new["Tipo"] = np.where(df_new["Importe"].apply(limpiar_importe) < 0, "Gasto", "Ingreso")
                     df_new["Categoria"] = "Varios"
                     df_new["Es_Fijo"] = "NO"
                     
-                    # Reordenar para que coincida con el Excel: Fecha, Tipo, Categoria, Descripcion, Importe, Es_Fijo
+                    # Añadir al bloque total
                     df_final = df_new[["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]]
                     datos_para_subir.extend(df_final.values.tolist())
                 except Exception as e:
-                    st.error(f"Error en archivo {archivo.name}: {e}")
+                    st.error(f"Error en {archivo.name}: {e}")
 
             if datos_para_subir:
                 sheet.append_rows(datos_para_subir)
-                st.success(f"✅ ¡{len(datos_para_subir)} movimientos añadidos con éxito!")
+                st.success(f"✅ ¡{len(datos_para_subir)} movimientos añadidos!")
                 st.rerun()
 
     st.divider()
@@ -136,6 +138,7 @@ df = df_raw[df_raw["Año"] == año_sel].copy() if not df_raw.empty else pd.DataF
 
 t1, t2, t3, t4 = st.tabs(["📊 Resumen Ejecutivo", "📅 Planificador Fijos", "🤖 Experto IA", "📂 Editor Vivo"])
 
+# --- TAB 1: RESUMEN ---
 with t1:
     if not df.empty:
         ing = df[df["Importe_Num"] > 0]["Importe_Num"].sum()
@@ -159,16 +162,34 @@ with t1:
             df_pie["Val"] = df_pie["Importe_Num"].abs()
             st.plotly_chart(px.pie(df_pie, values="Val", names="Categoria", hole=0.5, template="plotly_dark"), use_container_width=True)
     else:
-        st.info("Sube tus archivos CSV en la barra lateral para empezar.")
+        st.info("Sube archivos CSV para ver el análisis.")
 
+# --- TAB 2: PLANIFICADOR DE FIJOS ---
+with t2:
+    st.header("📋 Suelo de Gastos Fijos")
+    if not df.empty:
+        fijos = df[(df["Es_Fijo"].str.upper() == "SÍ") & (df["Importe_Num"] < 0)]
+        presupuesto = fijos.drop_duplicates(subset=['Descripcion'], keep='last')
+        
+        total_f = abs(presupuesto['Importe_Num'].sum())
+        st.markdown(f'<p class="label-led">Necesidad Mensual</p><p class="blue-led">{total_f:,.2f} €</p>', unsafe_allow_html=True)
+        st.dataframe(presupuesto[["Descripcion", "Importe", "Categoria"]], use_container_width=True)
+    else:
+        st.write("Sin datos fijos.")
+
+# --- TAB 3: IA ---
 with t3:
     st.header("🤖 Consultoría Experto Gem")
     if st.button("✨ Ejecutar Análisis Estratégico"):
         with st.spinner("Analizando..."):
-            resumen = f"Ingresos: {ing}€, Gastos: {gas}€, Balance: {bal}€"
-            analisis = llamar_experto_ia(resumen)
-            st.markdown(f"### 💡 Informe del Experto:\n{analisis}")
+            if not df.empty:
+                resumen = f"Ingresos: {ing}€, Gastos: {gas}€, Balance: {bal}€"
+                analisis = llamar_experto_ia(resumen)
+                st.markdown(f"### 💡 Informe:\n{analisis}")
+            else:
+                st.error("Sube datos primero.")
 
+# --- TAB 4: EDITOR ---
 with t4:
     st.header("📂 Editor de Datos")
     if not df.empty:
