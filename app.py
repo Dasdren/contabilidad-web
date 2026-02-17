@@ -25,29 +25,17 @@ def conectar_google_sheets():
 
 sheet = conectar_google_sheets()
 
-# --- EL LIMPIADOR INFALIBLE (Solución al error 34,95 -> 3495) ---
+# --- LIMPIADOR DE DECIMALES (RESUELTO ANTERIORMENTE) ---
 def limpiar_importe_santander(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
-    
-    # 1. Convertir a texto y quitar comillas/espacios/EUR
     s = str(valor).strip().replace('"', '').replace(' EUR', '').replace('€', '')
-    
-    # 2. Corregir el signo menos especial del Santander (−) a guion normal (-)
-    s = s.replace('−', '-')
-    
-    # 3. TRATAMIENTO DE DECIMALES: 
-    # Si detectamos una coma, primero quitamos los puntos de miles y luego la cambiamos por un punto.
+    s = s.replace('−', '-') # Signo menos Santander
     if ',' in s:
-        s = s.replace('.', '')  # Quita el punto de los miles
-        s = s.replace(',', '.') # Cambia la coma decimal por punto
-    
-    # 4. Quedarnos SOLO con los caracteres válidos para un número (dígitos, punto y menos)
+        s = s.replace('.', '') # Quitar miles
+        s = s.replace(',', '.') # Coma a punto
     s = "".join(c for c in s if c.isdigit() or c in '.-')
-    
-    try:
-        return float(s)
-    except:
-        return 0.0
+    try: return float(s)
+    except: return 0.0
 
 # --- CARGA DE DATOS ---
 def load_data():
@@ -57,20 +45,19 @@ def load_data():
     except:
         df = pd.DataFrame()
 
-    # Columnas esperadas en Google Sheets (Asegúrate que coincidan con la fila 1 de tu hoja)
-    columnas_sheets = ["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]
-    for col in columnas_sheets:
+    # Columnas exactas de tu Excel del proyecto
+    cols_excel = ["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]
+    for col in cols_excel:
         if col not in df.columns: df[col] = None
 
     if not df.empty:
         df["Importe_Num"] = df["Importe"].apply(limpiar_importe_santander)
         df["Fecha_DT"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors='coerce')
-        df["Es_Fijo_Clean"] = df["Es_Fijo"].astype(str).str.upper().str.strip()
+        df["Es_Fijo_Status"] = df["Es_Fijo"].astype(str).str.upper().str.strip()
     else:
-        # Estructura de seguridad para tabla vacía
         df["Importe_Num"] = pd.Series(dtype=float)
         df["Fecha_DT"] = pd.to_datetime([])
-        df["Es_Fijo_Clean"] = pd.Series(dtype=str)
+        df["Es_Fijo_Status"] = pd.Series(dtype=str)
     return df
 
 # --- INTERFAZ ---
@@ -79,39 +66,51 @@ df_hist = load_data()
 
 t1, t2, t3, t4 = st.tabs(["📊 Dashboard", "📅 Planificador (Fijos)", "🤖 Asesor IA", "📂 Historial"])
 
-# --- SIDEBAR: IMPORTACIÓN ---
+# --- SIDEBAR: IMPORTACIÓN INTELIGENTE ---
 st.sidebar.header("📥 Importar Santander")
 archivo = st.sidebar.file_uploader("Sube el CSV del Santander", type=["csv"])
 
 if archivo:
     if st.sidebar.button("🚀 Procesar e Importar"):
         try:
-            # Localizar el inicio de los datos
-            raw_content = archivo.getvalue().decode("utf-8").splitlines()
-            skip_idx = 0
-            for i, line in enumerate(raw_content):
+            # 1. RASTREAR LA FILA DE CABECERA Y EL SEPARADOR
+            raw_lines = archivo.getvalue().decode("utf-8").splitlines()
+            header_idx = -1
+            separador = "," # Por defecto
+            
+            for i, line in enumerate(raw_lines):
                 if "Fecha operación" in line:
-                    skip_idx = i
+                    header_idx = i
+                    if ";" in line: separador = ";"
                     break
             
-            archivo.seek(0)
-            # Leemos todo como texto (str) para no perder decimales por el camino
-            df_new = pd.read_csv(archivo, skiprows=skip_idx, dtype=str, engine='python')
+            if header_idx == -1:
+                st.sidebar.error("❌ No se encontró la columna 'Fecha operación'. Revisa el archivo.")
+                st.stop()
             
-            # EQUIVALENCIAS: Fecha operación -> Fecha | Concepto -> Descripcion | Importe -> Importe
+            # 2. LEER DESDE LA FILA ENCONTRADA
+            archivo.seek(0)
+            df_new = pd.read_csv(archivo, skiprows=header_idx, sep=separador, dtype=str, engine='python')
+            
+            # Limpiar posibles espacios en los nombres de columnas
+            df_new.columns = df_new.columns.str.strip()
+            
+            # 3. APLICAR EQUIVALENCIAS
+            # Fecha operación -> Fecha | Concepto -> Descripcion | Importe -> Importe
+            # Ignoramos: Fecha valor, Saldo, Divisa
             df_new = df_new[['Fecha operación', 'Concepto', 'Importe']].copy()
             df_new.columns = ["Fecha", "Descripcion", "Importe"]
             
-            # Limpiar importes
+            # 4. PROCESAMIENTO Y LIMPIEZA
             df_new["Importe_Num"] = df_new["Importe"].apply(limpiar_importe_santander)
             df_new["Tipo"] = np.where(df_new["Importe_Num"] < 0, "Gasto", "Ingreso")
             df_new["Categoria"] = "Varios"
             
-            # --- DETECCIÓN DE FIJOS ---
-            # Marcamos como fijo si Descripción + Importe aparecen en meses distintos
-            df_new['Fecha_DT_Tmp'] = pd.to_datetime(df_new['Fecha'], dayfirst=True, errors='coerce')
-            df_new['Mes'] = df_new['Fecha_DT_Tmp'].dt.to_period('M')
+            # 5. LÓGICA DE GASTOS FIJOS (REPETICIÓN)
+            df_new["Fecha_DT_Tmp"] = pd.to_datetime(df_new["Fecha"], dayfirst=True, errors='coerce')
+            df_new["Mes"] = df_new["Fecha_DT_Tmp"].dt.to_period('M')
             
+            # Combinamos con histórico para detectar si se repite en meses distintos
             if not df_hist.empty:
                 full_check = pd.concat([
                     df_hist[["Descripcion", "Importe_Num", "Fecha_DT"]].rename(columns={"Fecha_DT": "Mes"}),
@@ -121,19 +120,21 @@ if archivo:
             else:
                 full_check = df_new[["Descripcion", "Importe_Num", "Mes"]].copy()
 
+            # Marcamos "SÍ" si Descripción + Importe aparecen en más de 1 mes
             frecuencia = full_check.groupby(['Descripcion', 'Importe_Num'])['Mes'].nunique().reset_index()
-            fijos_list = frecuencia[frecuencia['Mes'] > 1]
-            
+            fijos_ids = frecuencia[frecuencia['Mes'] > 1]
+
             df_new["Es_Fijo"] = "NO"
-            for _, row in fijos_list.iterrows():
+            for _, row in fijos_ids.iterrows():
                 mask = (df_new["Descripcion"] == row["Descripcion"]) & (df_new["Importe_Num"] == row["Importe_Num"])
                 df_new.loc[mask, "Es_Fijo"] = "SÍ"
 
-            # GUARDAR: Convertimos el número a string con punto para GSheets
+            # 6. GUARDAR EN GOOGLE SHEETS
+            # Convertimos el número a string para evitar líos de formato en la celda
             df_new["Importe_Final"] = df_new["Importe_Num"].astype(str)
             final_save = df_new[["Fecha", "Tipo", "Categoria", "Descripcion", "Importe_Final", "Es_Fijo"]]
-            sheet.append_rows(final_save.values.tolist())
             
+            sheet.append_rows(final_save.values.tolist())
             st.sidebar.success(f"✅ ¡{len(df_new)} movimientos importados!")
             st.rerun()
             
@@ -150,11 +151,13 @@ with t1:
         st.plotly_chart(px.line(df_hist.dropna(subset=['Fecha_DT']).sort_values("Fecha_DT"), x="Fecha_DT", y="Importe_Num", color="Tipo"), use_container_width=True)
 
 with t2:
-    st.subheader("📋 Previsión de Gastos Fijos (Suelo Mensual)")
+    st.subheader("📋 Planificador Mensual (Sin Duplicados)")
+    st.info("Aquí solo se cuenta cada gasto fijo una vez para saber tu 'suelo' de gastos al mes.")
     if not df_hist.empty:
-        # Mostramos los fijos sin duplicarlos por mes
-        fijos_only = df_hist[(df_hist["Es_Fijo_Clean"] == "SÍ") & (df_hist["Importe_Num"] < 0)]
+        # Filtramos fijos y deduplicamos (Misma descripción + importe = 1 gasto mensual)
+        fijos_only = df_hist[(df_hist["Es_Fijo_Status"] == "SÍ") & (df_hist["Importe_Num"] < 0)]
         presupuesto = fijos_only.drop_duplicates(subset=['Descripcion', 'Importe_Num'], keep='last')
+        
         st.metric("Total Suelo Mensual", f"{presupuesto['Importe_Num'].sum():,.2f} €")
         st.dataframe(presupuesto[["Descripcion", "Importe_Num"]], use_container_width=True)
 
