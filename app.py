@@ -8,7 +8,7 @@ import numpy as np
 import google.generativeai as genai
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Santander IA Expert", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Santander IA Planner", layout="wide", page_icon="📅")
 
 # --- CONEXIÓN GOOGLE SHEETS ---
 def conectar_google_sheets():
@@ -19,13 +19,13 @@ def conectar_google_sheets():
         client = gspread.authorize(creds)
         sheet = client.open("Contabilidad_App").sheet1
         return sheet
-    except Exception as e:
-        st.error(f"⚠️ Error de conexión: {e}")
+    except:
+        st.error("⚠️ Error de conexión con Google Sheets.")
         st.stop()
 
 sheet = conectar_google_sheets()
 
-# --- LIMPIEZA DE IMPORTES ---
+# --- LIMPIEZA DE IMPORTES (ELIMINA EL ERROR -3495) ---
 def limpiar_importe(valor):
     if pd.isna(valor) or str(valor).strip() == "": return 0.0
     s = str(valor).strip().replace('"', '').replace(' EUR', '').replace('−', '-')
@@ -37,108 +37,98 @@ def limpiar_importe(valor):
 
 # --- CARGA DE DATOS ---
 def load_data():
-    try:
-        records = sheet.get_all_records()
-        if not records:
-            return pd.DataFrame()
-        df = pd.DataFrame(records)
-        
-        # Columnas requeridas
-        for col in ["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]:
-            if col not in df.columns: df[col] = None
-            
-        df["Importe_Num"] = df["Importe"].apply(limpiar_importe)
-        df["Fecha_DT"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors='coerce')
-        df["Año"] = df["Fecha_DT"].dt.year
-        df["Mes_Nombre"] = df["Fecha_DT"].dt.strftime('%m - %b')
-        return df
-    except Exception as e:
-        st.error(f"Error al leer la tabla: {e}")
-        return pd.DataFrame()
+    records = sheet.get_all_records()
+    df = pd.DataFrame(records)
+    # Columnas: Fecha, Tipo, Categoria, Descripcion, Importe, Es_Fijo
+    for col in ["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]:
+        if col not in df.columns: df[col] = ""
+    df["Importe_Num"] = df["Importe"].apply(limpiar_importe)
+    df["Fecha_DT"] = pd.to_datetime(df["Fecha"], dayfirst=True, errors='coerce')
+    df["Año"] = df["Fecha_DT"].dt.year
+    return df
 
 # --- INTERFAZ ---
 df = load_data()
-st.title("📊 Santander Smart Dashboard")
+st.title("🏦 Planificador de Gastos Fijos")
 
-# --- BARRA LATERAL: DIAGNÓSTICO ---
-with st.sidebar:
-    st.header("📥 Importar Datos")
-    archivo = st.file_uploader("Sube el CSV del Santander", type=["csv"])
-    if archivo:
-        if st.button("🚀 Procesar CSV"):
-            try:
-                raw = archivo.getvalue().decode("utf-8").splitlines()
-                skip = 0
-                for i, line in enumerate(raw):
-                    if "Fecha operación" in line: skip = i; break
-                archivo.seek(0)
-                df_new = pd.read_csv(archivo, skiprows=skip, dtype=str, sep=None, engine='python')
-                df_new.columns = df_new.columns.str.strip()
-                # Mapeo exacto pedido
-                df_new = df_new[['Fecha operación', 'Concepto', 'Importe']].copy()
-                df_new.columns = ["Fecha", "Descripcion", "Importe"]
-                df_new["Tipo"] = "Gasto" # Simplificado para el guardado
-                df_new["Categoria"] = "Varios"
-                df_new["Es_Fijo"] = "NO"
-                
-                sheet.append_rows(df_new[["Fecha", "Tipo", "Categoria", "Descripcion", "Importe", "Es_Fijo"]].values.tolist())
-                st.success("¡Datos guardados!")
-                st.rerun()
-            except Exception as e:
-                st.error(f"Error en CSV: {e}")
+# Selector de año en la barra lateral
+años = sorted([int(a) for a in df["Año"].dropna().unique() if a >= 2025], reverse=True)
+if not años: años = [2026]
+año_sel = st.sidebar.selectbox("📅 Seleccionar Año", años)
+df_year = df[df["Año"] == año_sel].copy()
 
-    st.divider()
-    if not df.empty:
-        # Selector de año (Si está vacío, mostrará 2025 por defecto)
-        lista_años = sorted(df["Año"].dropna().unique().astype(int))
-        if not lista_años: lista_años = [2025]
-        año_sel = st.selectbox("📅 Ver año:", lista_años, index=len(lista_años)-1)
-    else:
-        año_sel = 2025
+# PESTAÑAS
+t1, t2, t3, t4 = st.tabs(["🏠 Resumen Anual", "📅 Planificación de Fijos", "🤖 Experto IA", "📂 Editor Vivo"])
 
-# --- LÓGICA DE VISUALIZACIÓN ---
-if df.empty:
-    st.warning("📭 La base de datos está vacía.")
-    st.info("Por favor, sube un archivo CSV desde la barra lateral o revisa que tu Google Sheets tenga datos debajo de los encabezados.")
-    st.image("https://via.placeholder.com/800x200?text=Esperando+datos+de+Google+Sheets...")
-else:
-    df_filtrado = df[df["Año"] == año_sel].copy()
+with t2:
+    st.header("📋 Presupuesto Mensual de Gastos Fijos")
+    st.write("Este es tu 'suelo' de gastos. Cada concepto recurrente solo cuenta una vez para calcular tu necesidad mensual de efectivo.")
     
-    if df_filtrado.empty:
-        st.info(f"No hay movimientos registrados para el año {año_sel}.")
-        st.write("Datos disponibles para otros años:", df["Año"].unique())
-    else:
-        # PESTAÑAS
-        t1, t2, t3 = st.tabs(["🏠 Resumen", "🤖 Gem Experto", "📂 Editor Vivo"])
+    if not df_year.empty:
+        # 1. FILTRAR: Solo gastos (negativos) marcados como fijos ("SÍ")
+        df_fijos = df_year[
+            (df_year["Es_Fijo"].str.upper() == "SÍ") & 
+            (df_year["Importe_Num"] < 0)
+        ].copy()
         
-        with t1:
-            # MÉTRICAS
-            ing = df_filtrado[df_filtrado["Importe_Num"] > 0]["Importe_Num"].sum()
-            gas = abs(df_filtrado[df_filtrado["Importe_Num"] < 0]["Importe_Num"].sum())
+        if not df_fijos.empty:
+            # 2. DEDUPLICAR: Si hay 12 facturas de "Luz", solo mostramos la última para el presupuesto mensual
+            # Agrupamos por descripción para tener el gasto mensual único
+            presupuesto = df_fijos.sort_values("Fecha_DT").drop_duplicates(subset=['Descripcion'], keep='last')
             
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Ingresos", f"{ing:,.2f} €")
-            c2.metric("Gastos", f"{gas:,.2f} €", delta_color="inverse")
-            c3.metric("Balance", f"{(ing-gas):,.2f} €")
+            # 3. MÉTRICAS DE PLANIFICACIÓN
+            total_fijos_mes = presupuesto["Importe_Num"].sum()
             
-            # GRÁFICAS (PROTEGIDAS CONTRA SHAPE ERROR)
-            col_a, col_b = st.columns([2, 1])
-            with col_a:
-                st.subheader("Evolución Mensual")
-                df_m = df_filtrado.groupby(["Mes_Nombre", "Tipo"])["Importe_Num"].sum().abs().reset_index()
-                st.plotly_chart(px.bar(df_m, x="Mes_Nombre", y="Importe_Num", color="Tipo", barmode="group"), use_container_width=True)
+            c1, c2 = st.columns(2)
+            c1.metric("💰 Total Fijos al Mes", f"{abs(total_fijos_mes):,.2f} €")
+            c2.metric("📦 Cantidad de Servicios", f"{len(presupuesto)} recibos")
             
-            with col_b:
-                st.subheader("Categorías")
-                df_pie = df_filtrado[df_filtrado["Importe_Num"] < 0].copy()
-                if not df_pie.empty:
-                    df_pie["Abs_Importe"] = df_pie["Importe_Num"].abs()
-                    st.plotly_chart(px.pie(df_pie, values="Abs_Importe", names="Categoria", hole=0.4), use_container_width=True)
-                else:
-                    st.write("No hay gastos para este año.")
+            st.divider()
+            
+            # 4. TABLA DETALLADA
+            st.subheader("Lista de Gastos Recurrentes")
+            # Añadimos columna de valor absoluto para que sea más legible
+            presupuesto["Mensualidad"] = presupuesto["Importe_Num"].abs()
+            st.dataframe(
+                presupuesto[["Descripcion", "Categoria", "Mensualidad"]].sort_values("Mensualidad", ascending=False),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # 5. GRÁFICO DE PESO DE FIJOS
+            st.subheader("Distribución del Suelo Mensual")
+            fig_fijos = px.pie(presupuesto, values="Mensualidad", names="Descripcion", hole=0.4)
+            st.plotly_chart(fig_fijos, use_container_width=True)
+            
+        else:
+            st.info("No hay gastos marcados como 'SÍ' en la columna de fijos para este año.")
+            st.write("Ve a la pestaña **Editor Vivo** para marcar tus facturas recurrentes.")
+    else:
+        st.warning("No hay datos cargados para este año.")
 
-        with t2:
-            st.header("🤖 Gem: Experto Financiero")
-            if st.button("✨ Analizar con IA"):
-                st.write("Conectando con Gemini...")
-                # (Aquí iría tu función llamar_experto_ia configurada)
+# --- EL RESTO DE PESTAÑAS (Resumen rápido para que el código funcione) ---
+with t1:
+    if not df_year.empty:
+        ing = df_year[df_year["Importe_Num"] > 0]["Importe_Num"].sum()
+        gas = abs(df_year[df_year["Importe_Num"] < 0]["Importe_Num"].sum())
+        st.columns(3)[0].metric("Balance Anual", f"{(ing-gas):,.2f} €")
+        
+        # Gráfica de tarta (CORREGIDA para evitar ShapeError)
+        df_pie = df_year[df_year["Importe_Num"] < 0].copy()
+        if not df_pie.empty:
+            df_pie["Abs_Val"] = df_pie["Importe_Num"].abs()
+            st.plotly_chart(px.pie(df_pie, values="Abs_Val", names="Categoria", hole=0.4), use_container_width=True)
+
+with t4:
+    st.header("📂 Editor Vivo")
+    st.write("Selecciona 'SÍ' en la columna Fijo y dale a Guardar.")
+    df_ed = df_year[["Fecha", "Descripcion", "Importe", "Es_Fijo"]].copy()
+    res = st.data_editor(df_ed, column_config={
+        "Es_Fijo": st.column_config.SelectboxColumn("Fijo", options=["SÍ", "NO"])
+    }, use_container_width=True, key="editor_fijos")
+
+    if st.button("💾 Guardar Cambios en Google Sheets"):
+        # Actualizamos la columna F (Es_Fijo)
+        sheet.update(f"F2:F{len(res)+1}", [[x] for x in res["Es_Fijo"].values.tolist()])
+        st.success("¡Base de datos actualizada!")
+        st.rerun()
